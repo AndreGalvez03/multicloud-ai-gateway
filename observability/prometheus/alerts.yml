@@ -34,6 +34,20 @@ groups:
           severity: warning
         annotations:
           summary: "Gateway p95 latency is above 2 seconds"
+      - alert: GatewayDown
+        expr: up{job="platform"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The platform target is down"
+      - alert: LiteLLMDown
+        expr: up{job="litellm"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LiteLLM is down"
       - alert: RateLimitSpike
         expr: sum by (team) (rate(aigw_rate_limit_hits_total[5m])) > 0.5
         for: 5m

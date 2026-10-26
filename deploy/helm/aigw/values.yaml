@@ -1,12 +1,33 @@
+nameOverride: ai-gateway
+fullnameOverride: ai-gateway
+namespace: aigw
+
 replicaCount: 2
 
 image:
   repository: ghcr.io/example/ai-gateway
   tag: "0.1.0"
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 service:
+  type: ClusterIP
   port: 8080
+  nodePort: null
+
+secretsManagerSecret: aigw/providers
+databaseSecret: ai-gateway-db
+adminSecret: ai-gateway-admin
+
+providersSecret:
+  enabled: true
+  name: ai-gateway-providers
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+networkPolicy:
+  ingressApp: dashboard
 
 irsaRoleArn: ""
 
@@ -21,6 +42,7 @@ resources:
     memory: 512Mi
 
 autoscaling:
+  enabled: true
   minReplicas: 2
   maxReplicas: 6
   targetCPUUtilizationPercentage: 70
