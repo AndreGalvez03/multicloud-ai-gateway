@@ -90,6 +90,7 @@ class BudgetHold(Base):
     month: Mapped[str] = mapped_column(String(7))
     reserved_tokens: Mapped[int] = mapped_column(BigInteger, default=0)
     reserved_usd_micros: Mapped[int] = mapped_column(BigInteger, default=0)
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class IdempotencyRecord(Base):

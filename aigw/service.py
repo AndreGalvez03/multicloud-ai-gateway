@@ -195,6 +195,7 @@ def handle_chat(
             headers={"retry-after": str(rate.retry_after)},
         )
 
+    session.commit()
     chain = [route.model.name, *route.fallbacks][:3]
     tried: list[str] = []
     upstream_body: dict[str, Any] | None = None
@@ -407,6 +408,7 @@ def embed_for_team(
             "rate_limited",
             headers={"retry-after": str(rate.retry_after)},
         )
+    session.commit()
     try:
         body = embeddings(
             http,
@@ -422,12 +424,19 @@ def embed_for_team(
         return [], _fail(502, "upstream request failed", "upstream_error")
     data = body.get("data")
     if not isinstance(data, list):
+        release(session, team.id, now, input_est, reserved_usd)
+        session.commit()
         return [], _fail(502, "embedding response missing data", "upstream_error")
     vectors: list[list[float]] = []
-    for item in data:
-        if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
-            return [], _fail(502, "embedding response malformed", "upstream_error")
-        vectors.append([float(value) for value in item["embedding"]])
+    try:
+        for item in data:
+            if not isinstance(item, dict) or not isinstance(item.get("embedding"), list):
+                raise ValueError("embedding response malformed")
+            vectors.append([float(value) for value in item["embedding"]])
+    except (TypeError, ValueError):
+        release(session, team.id, now, input_est, reserved_usd)
+        session.commit()
+        return [], _fail(502, "embedding response malformed", "upstream_error")
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     prompt_tokens = usage.get("prompt_tokens") if isinstance(usage, dict) else None
     input_tokens = int(prompt_tokens) if isinstance(prompt_tokens, int) else input_est
@@ -461,7 +470,7 @@ def iter_chat_sse(
     http: httpx.Client,
     now: datetime | None = None,
 ) -> Any:
-    """SSE passthrough. The final usage chunk settles the reservation; a disconnect releases it."""
+    """SSE passthrough. Usage settles the reservation; a failure or disconnect releases it."""
     now = now or utcnow()
     if mode == "batch" or mode not in allowed_modes(team):
         if mode == "batch":
@@ -488,6 +497,9 @@ def iter_chat_sse(
     if not route.allowed or route.model is None:
         yield _sse_error(403, route.reason or "residency blocked")
         return
+    if mode == "provisioned" and not route.model.supports_provisioned:
+        yield _sse_error(400, f"{route.model.name} does not offer provisioned throughput")
+        return
     max_tokens = _clamp_max_tokens(payload.get("max_tokens", 256))
     prompt_text = "\n".join(item["content"] for item in redacted)
     input_est = estimate_tokens(prompt_text)
@@ -513,48 +525,110 @@ def iter_chat_sse(
         yield _sse_error(429, rate.reason or "rate limit exceeded")
         return
     session.commit()
-    settled = False
+    released = False
+
+    def release_once(*, rollback: bool) -> None:
+        nonlocal released
+        if released:
+            return
+        if rollback:
+            session.rollback()
+        release(session, team.id, now, reserved_tokens, reserved_usd)
+        session.commit()
+        released = True
+
     usage = (input_est, 0, 0)
+    usage_seen = False
     served = route.model
+    buffered: list[str] = []
+    collected: list[str] = []
     try:
+        completed = False
         for name in [route.model.name, *route.fallbacks][:3]:
             candidate = select_route(name, team.residency).model
             if candidate is None:
                 continue
-            response = chat_stream(
-                http,
-                base_url=settings.litellm_base_url,
-                api_key=settings.litellm_api_key,
-                payload={"model": candidate.litellm_model, "messages": redacted, "max_tokens": max_tokens},
-                timeout=settings.request_timeout_seconds,
-            )
+            if mode == "provisioned" and not candidate.supports_provisioned:
+                continue
+            try:
+                response = chat_stream(
+                    http,
+                    base_url=settings.litellm_base_url,
+                    api_key=settings.litellm_api_key,
+                    payload={
+                        "model": candidate.litellm_model,
+                        "messages": redacted,
+                        "max_tokens": max_tokens,
+                    },
+                    timeout=settings.request_timeout_seconds,
+                )
+            except httpx.HTTPError as exc:
+                log_event("upstream_attempt_failed", team=team.id, model=name, error=type(exc).__name__)
+                continue
             try:
                 if response.status_code >= 400:
-                    response.read()
+                    try:
+                        response.read()
+                    except httpx.HTTPError as exc:
+                        log_event(
+                            "upstream_attempt_failed",
+                            team=team.id,
+                            model=name,
+                            error=type(exc).__name__,
+                        )
+                        continue
                     if response.status_code < 500 and response.status_code != 429:
                         break
                     continue
                 served = candidate
-                for line in response.iter_lines():
-                    if not line:
-                        yield b"\n"
-                        continue
-                    parsed = _usage_from_sse(line)
-                    if parsed is not None:
-                        usage = parsed[:3]
-                        served = _model_reported({"model": parsed[3]}, served)
-                    yield (line + "\n").encode()
-                settled = True
+                buffered = []
+                collected = []
+                usage = (input_est, 0, 0)
+                usage_seen = False
+                try:
+                    for line in response.iter_lines():
+                        buffered.append(line)
+                        parsed = _usage_from_sse(line)
+                        if parsed is not None:
+                            usage = parsed[:3]
+                            usage_seen = True
+                            served = _model_reported({"model": parsed[3]}, served)
+                        piece = _delta_text(line)
+                        if piece:
+                            collected.append(piece)
+                except httpx.HTTPError as exc:
+                    log_event(
+                        "upstream_attempt_failed",
+                        team=team.id,
+                        model=name,
+                        error=type(exc).__name__,
+                    )
+                    continue
+                completed = True
                 break
             finally:
                 response.close()
-        text = ""
-        input_tokens, output_tokens, cached_tokens = usage[0], usage[1], usage[2]
-        if not settled:
-            release(session, team.id, now, reserved_tokens, reserved_usd)
-            session.commit()
+        if not completed:
+            release_once(rollback=True)
             yield _sse_error(502, "upstream request failed")
             return
+        text = "".join(collected)
+        output_text, output_block = check_output(text, topics)
+        if not usage_seen:
+            estimated = estimate_tokens(text)
+            usage = (input_est, estimated or max_tokens, 0)
+        if output_block:
+            body = _sse_finish(
+                served.name,
+                "content_filter",
+                "The model output was blocked by a team guardrail.",
+            )
+        elif output_text != text:
+            body = _sse_finish(served.name, "stop", output_text)
+        else:
+            body = _passthrough_sse(buffered)
+        yield body
+        input_tokens, output_tokens, cached_tokens = usage
         priced = price_model(served, input_tokens, output_tokens, cached_tokens, mode)
         _record(
             session,
@@ -570,16 +644,65 @@ def iter_chat_sse(
             cost_micros=to_micros(priced.incremental_usd),
             requests=1,
         )
-        release(session, team.id, now, reserved_tokens, reserved_usd)
         set_window_tokens(session, rate.window_id, input_tokens + output_tokens)
         _publish_team(session, team, now)
-        session.commit()
-        del text
+        release_once(rollback=False)
     except GeneratorExit:
-        if not settled:
-            release(session, team.id, now, reserved_tokens, reserved_usd)
-            session.commit()
+        release_once(rollback=True)
         raise
+    except Exception as exc:
+        log_event("upstream_error", team=team.id, model=route.model.name, error=type(exc).__name__)
+        release_once(rollback=True)
+        yield _sse_error(502, "upstream request failed")
+
+
+def _passthrough_sse(lines: list[str]) -> bytes:
+    chunks: list[bytes] = []
+    for line in lines:
+        if not line:
+            chunks.append(b"\n")
+        else:
+            chunks.append((line + "\n").encode())
+    return b"".join(chunks)
+
+
+def _sse_finish(model: str, finish_reason: str, content: str) -> bytes:
+    payload = {
+        "id": "chatcmpl-aigw",
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"content": content},
+                "finish_reason": finish_reason,
+            }
+        ],
+    }
+    return f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n".encode()
+
+
+def _delta_text(line: str) -> str:
+    if not line.startswith("data:"):
+        return ""
+    raw = line[len("data:") :].strip()
+    if not raw or raw == "[DONE]":
+        return ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    if not isinstance(choices, list):
+        return ""
+    parts: list[str] = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        delta = choice.get("delta")
+        if isinstance(delta, dict) and isinstance(delta.get("content"), str):
+            parts.append(delta["content"])
+    return "".join(parts)
 
 
 def _usage_from_sse(line: str) -> tuple[int, int, int, str] | None:

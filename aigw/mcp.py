@@ -8,6 +8,7 @@ This is enough to exercise an MCP client without a second service.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from aigw import __version__
@@ -125,3 +126,56 @@ def _result(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
 
 def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+@dataclass(frozen=True)
+class BatchOutcome:
+    """HTTP status and body for a JSON-RPC batch. body is None for 202."""
+
+    status_code: int
+    body: dict[str, Any] | list[dict[str, Any]] | None
+
+
+def handle_batch(
+    messages: list[Any],
+    *,
+    protocol_version: str | None,
+    usage_lookup: UsageLookup,
+    model_lookup: ModelLookup,
+) -> BatchOutcome:
+    """Apply JSON-RPC batch rules, including the 2025-06-18 removal of batches."""
+    if _batch_refused(messages, protocol_version):
+        return BatchOutcome(
+            400,
+            _error(None, -32600, "JSON-RPC batches are not accepted for protocol version 2025-06-18"),
+        )
+    if not messages:
+        return BatchOutcome(200, _error(None, -32600, "invalid request"))
+    responses: list[dict[str, Any]] = []
+    only_notifications = True
+    for item in messages:
+        if not isinstance(item, dict):
+            only_notifications = False
+            responses.append(_error(None, -32600, "invalid request"))
+            continue
+        one = handle_rpc(item, usage_lookup=usage_lookup, model_lookup=model_lookup)
+        if one is NOTIFICATION:
+            continue
+        only_notifications = False
+        if isinstance(one, dict):
+            responses.append(one)
+    if only_notifications:
+        return BatchOutcome(202, None)
+    return BatchOutcome(200, responses)
+
+
+def _batch_refused(messages: list[Any], protocol_version: str | None) -> bool:
+    if protocol_version == "2025-06-18":
+        return True
+    for item in messages:
+        if not isinstance(item, dict) or item.get("method") != "initialize":
+            continue
+        params = item.get("params")
+        if isinstance(params, dict) and params.get("protocolVersion") == "2025-06-18":
+            return True
+    return False

@@ -1,4 +1,4 @@
-from aigw.mcp import NOTIFICATION, handle_rpc
+from aigw.mcp import NOTIFICATION, handle_batch, handle_rpc
 
 
 def test_initialize_and_list_tools() -> None:
@@ -62,6 +62,50 @@ def test_unknown_method_and_notification() -> None:
         )
         is NOTIFICATION
     )
+
+
+def test_batch_rules() -> None:
+    empty = handle_batch([], protocol_version=None, usage_lookup=lambda _team: {}, model_lookup=lambda: [])
+    assert empty.status_code == 200
+    assert isinstance(empty.body, dict)
+    assert empty.body["error"]["code"] == -32600
+
+    notes = handle_batch(
+        [
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled"},
+        ],
+        protocol_version="2025-03-26",
+        usage_lookup=lambda _team: {},
+        model_lookup=lambda: [],
+    )
+    assert notes.status_code == 202
+    assert notes.body is None
+
+    refused = handle_batch(
+        [{"jsonrpc": "2.0", "id": 1, "method": "ping"}],
+        protocol_version="2025-06-18",
+        usage_lookup=lambda _team: {},
+        model_lookup=lambda: [],
+    )
+    assert refused.status_code == 400
+    assert isinstance(refused.body, dict)
+    assert refused.body["error"]["code"] == -32600
+
+    negotiated = handle_batch(
+        [
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-06-18"},
+            }
+        ],
+        protocol_version=None,
+        usage_lookup=lambda _team: {},
+        model_lookup=lambda: [],
+    )
+    assert negotiated.status_code == 400
 
 
 def _missing(team: str) -> dict[str, object]:

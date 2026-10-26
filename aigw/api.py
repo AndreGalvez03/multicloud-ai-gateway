@@ -29,7 +29,7 @@ from aigw.auth import bearer, hash_key, key_prefix, new_virtual_key, safe_equals
 from aigw.catalog import CATALOG
 from aigw.db import init_db, make_engine
 from aigw.logging import configure_logging, log_event
-from aigw.mcp import NOTIFICATION, handle_rpc
+from aigw.mcp import NOTIFICATION, handle_batch, handle_rpc
 from aigw.metrics import render_metrics
 from aigw.models import Team, VirtualKey
 from aigw.pricing import to_micros
@@ -562,14 +562,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return [spec.public() for spec in CATALOG.values()]
 
         if isinstance(payload, list):
-            responses = []
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-                one = handle_rpc(item, usage_lookup=usage_lookup, model_lookup=model_lookup)
-                if one is not NOTIFICATION and one is not None:
-                    responses.append(one)
-            return JSONResponse(content=responses)
+            header = request.headers.get("mcp-protocol-version")
+            version = header.strip() if isinstance(header, str) else None
+            outcome = handle_batch(
+                payload,
+                protocol_version=version,
+                usage_lookup=usage_lookup,
+                model_lookup=model_lookup,
+            )
+            if outcome.body is None:
+                return Response(status_code=outcome.status_code)
+            return JSONResponse(status_code=outcome.status_code, content=outcome.body)
 
         if not isinstance(payload, dict):
             return JSONResponse(status_code=400, content={"error": "invalid request"})

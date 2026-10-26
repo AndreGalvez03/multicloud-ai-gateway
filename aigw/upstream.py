@@ -83,7 +83,10 @@ def _post(
         raise UpstreamError(502, "upstream request failed", detail=str(exc)) from exc
     if response.status_code >= 400:
         raise UpstreamError(response.status_code, "upstream request failed", detail=response.text[:400])
-    data = response.json()
+    try:
+        data = response.json()
+    except (ValueError, httpx.HTTPError) as exc:
+        raise UpstreamError(502, "upstream request failed", detail=str(exc)) from exc
     if not isinstance(data, dict):
         raise UpstreamError(502, "upstream returned a non-object body")
     return data

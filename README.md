@@ -54,6 +54,8 @@ Then open the dashboard at <http://localhost:5173>, Grafana at <http://localhost
 
 `make up` builds the images and waits until the health check passes. It does not pull a Llama weight. `make pull-model` fetches `llama3.2` into Ollama if you want the self-hosted route for real.
 
+Token and dollar columns are bigint. `create_all` does not widen an existing `int4` column. If a local Postgres volume was created before that change, recreate it with `docker compose down -v` and then `make up`.
+
 A usage report, once `pip install -e .` has put the CLI on your path:
 
 ```bash

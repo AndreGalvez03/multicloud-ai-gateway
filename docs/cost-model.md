@@ -44,7 +44,7 @@ Provisioned is refused for `azure-gpt` because the catalog does not mark it as p
 
 ## Budgets
 
-Each team has a monthly token budget and a monthly USD budget. Before the gateway calls upstream it estimates the call as `len(prompt) / 4` input tokens plus `max_tokens` priced as output, with no cache credit. That estimate is reserved with one conditional UPDATE against `budget_holds` plus the month's settled usage. If it would pass 100% of either budget, the call is rejected with HTTP 402 and nothing is sent upstream. The reservation is committed before the upstream call and replaced by the actual usage when the call returns.
+Each team has a monthly token budget and a monthly USD budget. Before the gateway calls upstream it estimates the call as `len(prompt) / 4` input tokens plus `max_tokens` priced as output, with no cache credit. That estimate is reserved with one conditional UPDATE against `budget_holds` plus the month's settled usage. If it would pass 100% of either budget, the call is rejected with HTTP 402 and nothing is sent upstream. The reservation is committed before the upstream call and replaced by the actual usage when the call returns. A transport error or a malformed body releases it in that same request. A hold left untouched for 15 minutes is dropped on the next reservation.
 
 An alert is recorded at 80% when a successful call crosses that line, and at 100% when a call is blocked or when actual usage lands on the budget. Alerts are deduplicated per team, metric, threshold, and month.
 

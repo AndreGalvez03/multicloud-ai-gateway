@@ -25,12 +25,22 @@ def init_db(engine: Engine) -> sessionmaker[Session]:
 def _add_missing_columns(engine: Engine) -> None:
     """create_all does not alter a database that already has the tables."""
     inspector = inspect(engine)
-    if "teams" not in inspector.get_table_names():
+    tables = set(inspector.get_table_names())
+    if "teams" in tables:
+        names = {column["name"] for column in inspector.get_columns("teams")}
+        if "allowed_modes" not in names:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        "ALTER TABLE teams ADD COLUMN allowed_modes VARCHAR "
+                        "NOT NULL DEFAULT '[\"on_demand\"]'"
+                    )
+                )
+    if "budget_holds" not in tables:
         return
-    names = {column["name"] for column in inspector.get_columns("teams")}
-    if "allowed_modes" in names:
+    hold_columns = {column["name"] for column in inspector.get_columns("budget_holds")}
+    if "updated_at" in hold_columns:
         return
+    column_type = "TIMESTAMP" if engine.dialect.name == "postgresql" else "DATETIME"
     with engine.begin() as connection:
-        connection.execute(
-            text("ALTER TABLE teams ADD COLUMN allowed_modes VARCHAR NOT NULL DEFAULT '[\"on_demand\"]'")
-        )
+        connection.execute(text(f"ALTER TABLE budget_holds ADD COLUMN updated_at {column_type}"))

@@ -8,13 +8,14 @@ from decimal import Decimal
 
 import pytest
 from aigw.db import init_db, make_engine
-from aigw.holds import reserve
-from aigw.models import Team, UsageEvent
+from aigw.holds import HOLD_TTL, reserve
+from aigw.models import BudgetHold, Team, UsageEvent
 from aigw.pricing import to_micros
 from aigw.ratelimit import consume, set_window_tokens
 from aigw.settings import Settings, load_runtime_secrets
 from aigw.timeutil import month_start, utcnow
 from aigw.usage import month_snapshot
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import Session
 
 
@@ -124,6 +125,46 @@ def test_rate_window_is_adjusted_to_actual_output(tmp_path: object) -> None:
     assert not again.allowed
     assert again.reason is not None
     assert "tpm" in again.reason
+
+
+def test_stale_hold_is_replaced_on_the_next_reservation(tmp_path: object) -> None:
+    path = tmp_path.__truediv__("stale.db")  # type: ignore[attr-defined]
+    engine = make_engine(f"sqlite:///{path}")
+    factory = init_db(engine)
+    now = utcnow()
+    with factory() as session:
+        team = _team(session, "0.000001")
+        assert reserve(session, team, now, tokens=1, usd_micros=1)
+        session.commit()
+        blocked = reserve(session, team, now, tokens=1, usd_micros=1)
+        assert blocked is False
+        row = session.scalar(select(BudgetHold).where(BudgetHold.team_id == team.id))
+        assert row is not None
+        row.updated_at = now - HOLD_TTL - timedelta(seconds=1)
+        session.commit()
+        assert reserve(session, team, now, tokens=1, usd_micros=1)
+        session.commit()
+        fresh = session.scalar(select(BudgetHold).where(BudgetHold.team_id == team.id))
+        assert fresh is not None
+        assert fresh.reserved_usd_micros == 1
+        assert reserve(session, team, now, tokens=1, usd_micros=1) is False
+
+
+def test_existing_hold_table_gains_updated_at(tmp_path: object) -> None:
+    path = tmp_path.__truediv__("old.db")  # type: ignore[attr-defined]
+    engine = make_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.execute(text("CREATE TABLE teams (id VARCHAR PRIMARY KEY)"))
+        connection.execute(
+            text(
+                "CREATE TABLE budget_holds ("
+                "id INTEGER PRIMARY KEY, team_id VARCHAR, month VARCHAR, "
+                "reserved_tokens BIGINT, reserved_usd_micros BIGINT)"
+            )
+        )
+    init_db(engine)
+    columns = {column["name"] for column in inspect(engine).get_columns("budget_holds")}
+    assert "updated_at" in columns
 
 
 def test_production_boot_refuses_fixture_admin_token() -> None:

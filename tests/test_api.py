@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
+
 import httpx
 import pytest
 from aigw.api import create_app
 from aigw.catalog import get_model, price_model
+from aigw.models import RateWindow
 from aigw.settings import Settings
+from aigw.tokens import estimate_tokens
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select, text
 
 ADMIN = {"Authorization": "Bearer local-admin-token"}
 PAYMENTS = {"Authorization": "Bearer local-vk-payments"}
@@ -321,6 +327,312 @@ def test_mcp_is_admin_only_and_read_only(client: TestClient) -> None:
     )
     assert batch.status_code == 200
     assert isinstance(batch.json(), list)
+
+
+def _reserved(client: TestClient, team_id: str) -> tuple[int, int]:
+    factory = client.app.state.session_factory
+    with factory() as session:
+        row = session.execute(
+            text("SELECT reserved_tokens, reserved_usd_micros FROM budget_holds WHERE team_id = :team"),
+            {"team": team_id},
+        ).one_or_none()
+    if row is None:
+        return (0, 0)
+    return (int(row[0]), int(row[1]))
+
+
+def _ok_upstream(request: httpx.Request) -> httpx.Response:
+    body = json.loads(request.content.decode())
+    model = str(body.get("model") or "azure-gpt")
+    user = "hello"
+    messages = body.get("messages")
+    if isinstance(messages, list) and messages and isinstance(messages[-1], dict):
+        user = str(messages[-1].get("content") or user)
+    return httpx.Response(
+        200,
+        json={
+            "id": "chatcmpl-test",
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": f"[{model}] {user}"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 4, "total_tokens": 8},
+        },
+    )
+
+
+def _use_transport(client: TestClient, handler: Callable[[httpx.Request], httpx.Response]) -> None:
+    client.app.state.http.close()
+    client.app.state.http = httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def test_raising_transport_releases_the_budget_hold(client: TestClient) -> None:
+    seen: list[int] = []
+
+    def explode(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        if request.url.path.endswith("/embeddings"):
+            raise httpx.ConnectError("embedding down")
+        factory = client.app.state.session_factory
+        with factory() as session:
+            count = session.scalar(
+                select(func.count()).select_from(RateWindow).where(RateWindow.team_id == "payments")
+            )
+            seen.append(int(count or 0))
+        if body.get("stream"):
+            raise httpx.ReadTimeout("timed out")
+        raise httpx.ConnectError("chat down")
+
+    _use_transport(client, explode)
+    chat = client.post(
+        "/v1/chat/completions",
+        headers=PAYMENTS,
+        json={"model": "azure-gpt", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert chat.status_code == 502
+    assert seen and seen[0] >= 1
+    assert _reserved(client, "payments") == (0, 0)
+
+    _use_transport(client, explode)
+    streamed = client.post(
+        "/v1/chat/completions",
+        headers=PAYMENTS,
+        json={"model": "azure-gpt", "messages": [{"role": "user", "content": "hello"}], "stream": True},
+    )
+    assert streamed.status_code == 200
+    assert "upstream request failed" in streamed.text
+    assert _reserved(client, "payments") == (0, 0)
+
+    malformed = client.post(
+        "/v1/embeddings",
+        headers=PAYMENTS,
+        json={"model": "embed-azure", "input": "hello"},
+    )
+    assert malformed.status_code == 502
+    assert _reserved(client, "payments") == (0, 0)
+
+    def bad_json(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not-json", headers={"content-type": "application/json"})
+
+    _use_transport(client, bad_json)
+    decoded = client.post(
+        "/v1/chat/completions",
+        headers=PAYMENTS,
+        json={"model": "azure-gpt", "messages": [{"role": "user", "content": "hello"}]},
+    )
+    assert decoded.status_code == 502
+    assert _reserved(client, "payments") == (0, 0)
+
+    def bad_embedding(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/embeddings"):
+            return httpx.Response(200, json={"data": [{"embedding": "nope"}]})
+        return _ok_upstream(request)
+
+    _use_transport(client, bad_embedding)
+    embedded = client.post(
+        "/v1/embeddings",
+        headers=PAYMENTS,
+        json={"model": "embed-azure", "input": "hello"},
+    )
+    assert embedded.status_code == 502
+    assert embedded.json()["error"]["code"] == "upstream_error"
+    assert _reserved(client, "payments") == (0, 0)
+
+    _use_transport(client, _ok_upstream)
+    recovered = client.post(
+        "/v1/chat/completions",
+        headers=PAYMENTS,
+        json={"model": "azure-gpt", "messages": [{"role": "user", "content": "hello again"}]},
+    )
+    assert recovered.status_code == 200
+    assert _reserved(client, "payments") == (0, 0)
+
+
+def test_stream_retries_when_the_transport_raises(client: TestClient) -> None:
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        model = str(body["model"])
+        seen.append(model)
+        if "azure" in model:
+            raise httpx.ConnectError("refused")
+        text = "fallback answer"
+        chunk = {
+            "model": model,
+            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        }
+        payload = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, content=payload, headers={"content-type": "text/event-stream"})
+
+    _use_transport(client, handler)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=PAYMENTS,
+        json={
+            "model": "azure-gpt",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 16,
+        },
+    )
+    assert response.status_code == 200
+    assert "fallback answer" in response.text
+    assert seen[0] == "azure-gpt"
+    assert "vertex-gemini" in seen
+    assert _reserved(client, "payments") == (0, 0)
+
+
+def test_stream_filters_output_and_estimates_missing_usage(client: TestClient) -> None:
+    before = client.get("/v1/teams/payments/usage").json()
+
+    def blocked(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        chunk = {
+            "model": body["model"],
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "the secret name is project-northstar"},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+        payload = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, content=payload, headers={"content-type": "text/event-stream"})
+
+    _use_transport(client, blocked)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=PAYMENTS,
+        json={
+            "model": "azure-gpt",
+            "stream": True,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "say anything"}],
+        },
+    )
+    assert response.status_code == 200
+    assert "content_filter" in response.text
+    assert "project-northstar" not in response.text
+    assert "blocked by a team guardrail" in response.text
+    after = client.get("/v1/teams/payments/usage").json()
+    assert after["output_tokens"] >= before["output_tokens"] + estimate_tokens(
+        "the secret name is project-northstar"
+    )
+    assert _reserved(client, "payments") == (0, 0)
+
+    growth_before = client.get("/v1/teams/growth/usage").json()
+
+    def no_usage(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        user = body["messages"][-1]["content"]
+        text = "" if user == "empty" else "hello from the model"
+        chunk = {
+            "model": body["model"],
+            "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": "stop"}],
+        }
+        payload = f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, content=payload, headers={"content-type": "text/event-stream"})
+
+    _use_transport(client, no_usage)
+    estimated = client.post(
+        "/v1/chat/completions",
+        headers=GROWTH,
+        json={
+            "model": "vertex-gemini",
+            "stream": True,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "count this"}],
+        },
+    )
+    assert estimated.status_code == 200
+    assert "hello from the model" in estimated.text
+    growth_mid = client.get("/v1/teams/growth/usage").json()
+    billed = estimate_tokens("hello from the model")
+    assert growth_mid["output_tokens"] == growth_before["output_tokens"] + billed
+
+    empty = client.post(
+        "/v1/chat/completions",
+        headers=GROWTH,
+        json={
+            "model": "vertex-gemini",
+            "stream": True,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "empty"}],
+        },
+    )
+    assert empty.status_code == 200
+    growth_after = client.get("/v1/teams/growth/usage").json()
+    assert growth_after["output_tokens"] == growth_mid["output_tokens"] + 32
+    assert _reserved(client, "growth") == (0, 0)
+
+
+def test_stream_refuses_provisioned_when_the_model_does_not_support_it(client: TestClient) -> None:
+    patched = client.patch(
+        "/v1/teams/growth",
+        headers=ADMIN,
+        json={"allowed_modes": ["on_demand", "batch", "provisioned"]},
+    )
+    assert patched.status_code == 200
+    before = client.get("/v1/teams/growth/usage").json()
+    refused = client.post(
+        "/v1/chat/completions",
+        headers={**GROWTH, "x-aigw-mode": "provisioned"},
+        json={
+            "model": "vertex-gemini",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+    assert "does not offer provisioned throughput" in refused.text
+    assert _reserved(client, "growth") == (0, 0)
+    allowed = client.post(
+        "/v1/chat/completions",
+        headers={**GROWTH, "x-aigw-mode": "provisioned"},
+        json={
+            "model": "bedrock-claude",
+            "stream": True,
+            "messages": [{"role": "user", "content": "hello"}],
+            "max_tokens": 16,
+        },
+    )
+    assert allowed.status_code == 200
+    assert "does not offer provisioned throughput" not in allowed.text
+    assert "bedrock-claude" in allowed.text
+    after = client.get("/v1/teams/growth/usage").json()
+    assert after["requests"] == before["requests"] + 1
+
+
+def test_mcp_batch_status_codes(client: TestClient) -> None:
+    empty = client.post("/mcp", headers=ADMIN, json=[])
+    assert empty.status_code == 200
+    assert empty.json()["error"]["code"] == -32600
+    assert not isinstance(empty.json(), list)
+
+    notes = client.post(
+        "/mcp",
+        headers={**ADMIN, "MCP-Protocol-Version": "2025-03-26"},
+        json=[
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "method": "notifications/cancelled"},
+        ],
+    )
+    assert notes.status_code == 202
+    assert notes.content == b""
+
+    refused = client.post(
+        "/mcp",
+        headers={**ADMIN, "MCP-Protocol-Version": "2025-06-18"},
+        json=[{"jsonrpc": "2.0", "id": 1, "method": "ping"}],
+    )
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == -32600
 
 
 def test_stream_bills_the_model_that_answered(client: TestClient) -> None:
