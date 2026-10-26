@@ -57,3 +57,20 @@ Clear the fault: `{"match":"bedrock","mode":"ok"}`.
 - Page on p95, not on the average. The average hides a provider that stalls one request in twenty.
 - Cap `max_tokens` (the platform already clamps to 4096). Long completions dominate latency and the output price.
 - Prompt caching lowers the input bill and, on a real provider, often the time to first token. The mock reports cache reads for a long system message so the price path can be tested. It does not make the mock faster.
+
+## In EKS
+
+```bash
+kubectl -n aigw logs deploy/ai-gateway --since=15m | grep completion
+kubectl -n aigw top pods
+```
+
+Logs Insights on `/aigw/<name>/platform`:
+
+```
+fields @timestamp, team, model, latency_ms
+| filter event = "completion"
+| stats pct(latency_ms, 95) by model
+```
+
+Grafana still reads Prometheus. CloudWatch is the log path the add-on ships.

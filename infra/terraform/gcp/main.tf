@@ -35,6 +35,15 @@ variable "k8s_service_account" {
   default = "ai-gateway"
 }
 
+variable "eks_oidc_issuer" {
+  description = "EKS OIDC issuer URL, including https://. This is not a GKE pool."
+  type        = string
+}
+
+data "google_project" "this" {
+  project_id = var.project_id
+}
+
 resource "google_project_service" "vertex" {
   service            = "aiplatform.googleapis.com"
   disable_on_destroy = false
@@ -52,12 +61,45 @@ resource "google_project_iam_member" "vertex_user" {
   member  = "serviceAccount:${google_service_account.gateway.email}"
 }
 
+resource "google_iam_workload_identity_pool" "eks" {
+  workload_identity_pool_id = "aigw-eks"
+  display_name              = "EKS AI gateway"
+  description               = "Trusts the EKS cluster that runs the gateway. No downloaded key."
+}
+
+resource "google_iam_workload_identity_pool_provider" "eks" {
+  workload_identity_pool_id          = google_iam_workload_identity_pool.eks.workload_identity_pool_id
+  workload_identity_pool_provider_id = "eks-oidc"
+  display_name                       = "EKS"
+  attribute_mapping = {
+    "google.subject" = "assertion.sub"
+  }
+  attribute_condition = "assertion.sub==\"system:serviceaccount:${var.namespace}:${var.k8s_service_account}\""
+  oidc {
+    issuer_uri = var.eks_oidc_issuer
+  }
+}
+
 resource "google_service_account_iam_member" "workload_identity" {
   service_account_id = google_service_account.gateway.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "serviceAccount:${var.project_id}.svc.id.goog[${var.namespace}/${var.k8s_service_account}]"
+  member             = "principal://iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.eks.workload_identity_pool_id}/subject/system:serviceaccount:${var.namespace}:${var.k8s_service_account}"
 }
 
 output "gateway_service_account" {
   value = google_service_account.gateway.email
+}
+
+output "workload_identity_credential_config" {
+  description = "External-account config for the gateway pod. The token file is the EKS projected service account token."
+  value = jsonencode({
+    type                              = "external_account"
+    audience                          = "//iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.eks.workload_identity_pool_id}/providers/${google_iam_workload_identity_pool_provider.eks.workload_identity_pool_provider_id}"
+    subject_token_type                = "urn:ietf:params:oauth:token-type:jwt"
+    token_url                         = "https://sts.googleapis.com/v1/token"
+    service_account_impersonation_url = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${google_service_account.gateway.email}:generateAccessToken"
+    credential_source = {
+      file = "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+    }
+  })
 }

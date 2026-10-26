@@ -42,11 +42,28 @@ Clear the fault with `{"match":"bedrock","mode":"ok"}`.
 
 - Confirm the outage on the provider status page before changing config.
 - For a US or global team, the catalog order already continues to the next allowed model. Leave it.
-- For an EU team during an Azure incident, the honest options are to wait, or to fail over to a **second EU stack** (another Azure region, or a local model in an EU cluster). Do not add `bedrock-claude` to the Azure fallback list.
+- For an EU team during an Azure incident, the platform already continues to `vertex-gemini` (europe-west1) and then `local-llama` when that cluster is in the EU. Do not add `bedrock-claude` to that list.
 - If the proxy itself is down (`localhost:4000/health/liveliness` fails) while the platform is up, restart the LiteLLM container. The platform cannot route around a dead proxy.
 
 ## Prevention
 
 - `HighErrorRate` per team, plus a separate check on LiteLLM's own `/metrics`.
-- Keep fallbacks inside the residency set. Review both `aigw/routing.py` and `litellm/config.yaml` when a model is added.
+- Keep fallbacks inside the residency set. `litellm/config.yaml` has an empty fallback list on purpose. Change `aigw/routing.py` when a model is added.
 - Practice this with the mock switch. It is the same control the smoke test relies on.
+
+## In EKS
+
+```bash
+kubectl -n aigw logs deploy/ai-gateway --since=15m | grep 'upstream request failed'
+kubectl -n aigw get pods -l app.kubernetes.io/name=ai-gateway
+```
+
+Logs Insights on `/aigw/<name>/platform`:
+
+```
+fields @timestamp, team, model
+| filter event = "completion" or event = "upstream_error"
+| stats count() by model
+```
+
+`LiteLLMDown` fires when Prometheus cannot scrape the proxy. The private API means you reach the cluster through SSM, a bastion, or a VPN. The cluster creator is not an admin; use an EKS access entry.

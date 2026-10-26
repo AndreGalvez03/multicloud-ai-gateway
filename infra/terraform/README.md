@@ -5,7 +5,7 @@ Three roots, none of which is applied from this repository or from CI.
 | Root | What it describes |
 | --- | --- |
 | `aws/` | The platform: VPC, private EKS, RDS Postgres, Bedrock invoke via IRSA, Secrets Manager, CloudWatch, AWS Budgets, IAM Identity Center permission set. |
-| `gcp/` | Vertex AI API, a gateway service account, and Workload Identity for the `aigw/ai-gateway` Kubernetes service account. |
+| `gcp/` | Vertex AI API, a gateway service account, and a Workload Identity pool that trusts the EKS issuer. |
 | `azure/` | An EU AI Services account (private endpoint, local auth off, customer-managed key), a `gpt-4o-mini` deployment, and an Entra ID group. |
 
 ## Layout per environment
@@ -17,7 +17,7 @@ infra/terraform/aws/envs/dev.tfvars
 infra/terraform/aws/envs/prod.tfvars
 ```
 
-Remote state is S3 plus a DynamoDB lock, one key per environment. `aws/backend.hcl.example` shows the shape. There is no `backend` block in the roots, so `terraform init -backend=false` works with no AWS account. To use the remote backend later:
+Remote state is an S3 backend with `use_lockfile = true` (Terraform 1.11). `aws/backend.hcl.example` fills in the bucket, key, region, and KMS key. The root has an empty `backend "s3"` block, so `terraform init -backend=false` still works with no AWS account. To use the remote backend later:
 
 ```bash
 cd infra/terraform/aws

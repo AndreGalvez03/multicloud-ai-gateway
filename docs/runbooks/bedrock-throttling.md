@@ -32,8 +32,9 @@ In the real account, check the Bedrock service quota for `anthropic.claude-3-5-s
 
 ## Fix
 
-- Short term: leave the fallback in place. Vertex is an allowed region for `us` and `global` teams. It is not allowed for `eu` teams, and the Azure fallback list is empty so an EU call will not be sent to Bedrock to begin with.
-- If Bedrock is the required model, request a quota increase or turn on provisioned throughput (`enable_provisioned_throughput` in the AWS root, one model unit, one-month commitment). That is a spend decision. The catalog adds the monthly commitment in the cost report; it does not buy the commitment by itself.
+- Short term: leave the platform fallback in place. `vertex-gemini` is tagged `eu` (`europe-west1`), so `us`, `global`, and `eu` teams may land there. An EU team never starts on Bedrock. LiteLLM does not add a second fallback.
+- If Bedrock is the required model, request a quota increase or turn on provisioned throughput (`enable_provisioned_throughput` in the AWS root, one model unit, one-month commitment). That is a spend decision. The catalog prices it as hourly rate times units times 730 hours. Entitling the team to the mode adds that commitment; Terraform is what buys the model unit.
+- The CloudWatch alarm `${name}-bedrock-throttles` watches `AWS/Bedrock` `InvocationThrottles`.
 - Clear the local fault when you are done: `{"match":"bedrock","mode":"ok"}`.
 
 ## Prevention
@@ -41,3 +42,13 @@ In the real account, check the Bedrock service quota for `anthropic.claude-3-5-s
 - Page on Bedrock `ThrottlingException` separately from `aigw_rate_limit_hits_total`. They have different owners.
 - Keep the fallback list inside the team's residency set (ADR 0005).
 - For a steady high volume, provisioned throughput is the control. On-demand quota is not a capacity plan.
+
+## In EKS
+
+```bash
+kubectl -n aigw logs deploy/ai-gateway --since=15m | grep bedrock-claude
+```
+
+The alarm `${name}-bedrock-throttles` is `AWS/Bedrock` `InvocationThrottles` greater than 5 for five minutes. Logs Insights on `/aws/bedrock/<name>/invocations` shows the request metadata. Text delivery is off, so the prompt body is not in that group.
+
+Reach the private API through SSM, a bastion, or a VPN, using an EKS access entry.

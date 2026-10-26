@@ -8,6 +8,10 @@ variable "identity_store_id" {
 }
 variable "team_group_names" { type = list(string) }
 variable "log_group_arns" { type = list(string) }
+variable "account_id" {
+  type    = string
+  default = null
+}
 
 data "aws_iam_policy_document" "team_read" {
   #checkov:skip=CKV_AWS_356: ListMetrics and budgets ViewBudget have no resource ARN. The Bedrock deny is intentionally account-wide.
@@ -15,7 +19,6 @@ data "aws_iam_policy_document" "team_read" {
     sid    = "ReadGatewayOperations"
     effect = "Allow"
     actions = [
-      "logs:DescribeLogGroups",
       "logs:DescribeLogStreams",
       "logs:FilterLogEvents",
       "logs:GetLogEvents",
@@ -23,6 +26,13 @@ data "aws_iam_policy_document" "team_read" {
       "logs:GetQueryResults",
     ]
     resources = concat(var.log_group_arns, [for arn in var.log_group_arns : "${arn}:*"])
+  }
+
+  statement {
+    sid       = "DescribeLogGroups"
+    effect    = "Allow"
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["*"]
   }
 
   statement {
@@ -72,4 +82,14 @@ resource "aws_identitystore_group" "team" {
   identity_store_id = var.identity_store_id
   display_name      = var.team_group_names[count.index]
   description       = "Product team mapped to an AI Gateway virtual-key group"
+}
+
+resource "aws_ssoadmin_account_assignment" "team" {
+  count              = var.instance_arn == null || var.identity_store_id == null || var.account_id == null ? 0 : length(var.team_group_names)
+  instance_arn       = var.instance_arn
+  permission_set_arn = aws_ssoadmin_permission_set.team[0].arn
+  principal_id       = aws_identitystore_group.team[count.index].group_id
+  principal_type     = "GROUP"
+  target_id          = var.account_id
+  target_type        = "AWS_ACCOUNT"
 }

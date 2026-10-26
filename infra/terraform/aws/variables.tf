@@ -125,3 +125,9 @@ variable "team_group_names" {
   type    = list(string)
   default = ["ai-team-payments", "ai-team-growth", "ai-team-platform"]
 }
+
+variable "eks_access_role_arns" {
+  description = "IAM role ARNs granted cluster-admin via EKS access entries. The API is private and the cluster creator is not an admin."
+  type        = list(string)
+  default     = []
+}

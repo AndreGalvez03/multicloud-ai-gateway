@@ -51,3 +51,19 @@ curl -s -X PATCH localhost:8080/v1/teams/sandbox \
 - Alert on `RateLimitSpike` before the team files a ticket.
 - Size RPM/TPM from the last month's peak, not from the average. The dashboard shows the month's hit count per team.
 - The Postgres window can race across replicas (ADR 0003). If two pods both allow a burst that should have been denied, the follow-up is a per-team lock, not a higher limit.
+
+## In EKS
+
+```bash
+kubectl -n aigw logs deploy/ai-gateway --since=15m | grep rate_limited
+```
+
+The same events land in the CloudWatch log group `/aigw/<name>/platform` once the `amazon-cloudwatch-observability` add-on is running. A Logs Insights query:
+
+```
+fields @timestamp, team, model
+| filter event = "rate_limited"
+| stats count() by team
+```
+
+`aigw_rate_limit_hits_total` is the Prometheus series. It is not the Bedrock throttle alarm.

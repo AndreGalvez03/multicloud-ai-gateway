@@ -39,5 +39,21 @@ curl -s -X PATCH localhost:8080/v1/teams/payments \
 ## Prevention
 
 - `TeamBudgetWarning` at 80% is the page that should reach the team while they can still change the workload. 100% is the hard stop.
-- Batch mode (`X-AIGW-Mode: batch`) halves the cloud chat price in this catalog. It is a billing mode, not a way around the token budget. Cached tokens still count as tokens.
+- Batch mode (`POST /v1/batch/chat`, and only if the team is allowed) halves the cloud chat price in this catalog. It is a billing mode, not a way around the token budget. Cached tokens still count as tokens.
 - Review the catalog when a provider changes list price. The ledger will not rewrite history.
+
+## In EKS
+
+```bash
+kubectl -n aigw logs deploy/ai-gateway --since=1h | grep budget_blocked
+```
+
+Logs Insights on `/aigw/<name>/platform`:
+
+```
+fields @timestamp, team
+| filter event = "budget_blocked"
+| stats count() by team
+```
+
+The AWS Budget on the Bedrock service is the account backstop. It does not name the team.

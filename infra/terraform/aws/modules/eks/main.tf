@@ -8,6 +8,10 @@ variable "node_instance_types" { type = list(string) }
 variable "node_min" { type = number }
 variable "node_desired" { type = number }
 variable "node_max" { type = number }
+variable "access_role_arns" {
+  type    = list(string)
+  default = []
+}
 
 data "aws_iam_policy_document" "cluster_trust" {
   statement {
@@ -54,6 +58,11 @@ resource "aws_eks_cluster" "this" {
   }
 
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+
+  access_config {
+    authentication_mode                         = "API"
+    bootstrap_cluster_creator_admin_permissions = false
+  }
 
   depends_on = [
     aws_iam_role_policy_attachment.cluster,
@@ -144,7 +153,64 @@ resource "aws_eks_node_group" "default" {
   depends_on = [aws_iam_role_policy_attachment.nodes]
 }
 
+resource "aws_eks_access_entry" "admin" {
+  for_each      = toset(var.access_role_arns)
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = each.value
+  type          = "STANDARD"
+}
+
+resource "aws_eks_access_policy_association" "admin" {
+  for_each      = toset(var.access_role_arns)
+  cluster_name  = aws_eks_cluster.this.name
+  principal_arn = each.value
+  policy_arn    = "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+
+  access_scope {
+    type = "cluster"
+  }
+
+  depends_on = [aws_eks_access_entry.admin]
+}
+
+resource "aws_eks_addon" "vpc_cni" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "vpc-cni"
+  addon_version               = "v1.19.2-eksbuild.1"
+  resolve_conflicts_on_create = "OVERWRITE"
+  configuration_values        = jsonencode({ enableNetworkPolicy = "true" })
+}
+
+resource "aws_eks_addon" "coredns" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "coredns"
+  addon_version               = "v1.11.4-eksbuild.2"
+  resolve_conflicts_on_create = "OVERWRITE"
+  depends_on                  = [aws_eks_node_group.default]
+}
+
+resource "aws_eks_addon" "kube_proxy" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "kube-proxy"
+  addon_version               = "v1.31.3-eksbuild.2"
+  resolve_conflicts_on_create = "OVERWRITE"
+}
+
+resource "aws_eks_addon" "cloudwatch" {
+  cluster_name                = aws_eks_cluster.this.name
+  addon_name                  = "amazon-cloudwatch-observability"
+  addon_version               = "v2.5.0-eksbuild.1"
+  resolve_conflicts_on_create = "OVERWRITE"
+  depends_on                  = [aws_iam_role_policy_attachment.nodes_cloudwatch]
+}
+
+resource "aws_iam_role_policy_attachment" "nodes_cloudwatch" {
+  role       = aws_iam_role.nodes.name
+  policy_arn = "arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy"
+}
+
 output "cluster_name" { value = aws_eks_cluster.this.name }
+output "oidc_issuer" { value = aws_eks_cluster.this.identity[0].oidc[0].issuer }
 output "cluster_security_group_id" { value = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id }
 output "oidc_provider_arn" { value = aws_iam_openid_connect_provider.eks.arn }
 output "oidc_host" { value = replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "") }

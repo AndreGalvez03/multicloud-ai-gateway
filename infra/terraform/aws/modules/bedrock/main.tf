@@ -2,6 +2,10 @@ variable "name" { type = string }
 variable "enabled" { type = bool }
 variable "enable_provisioned_throughput" { type = bool }
 variable "model_ids" { type = list(string) }
+variable "inference_profile_ids" {
+  type    = list(string)
+  default = []
+}
 variable "region" { type = string }
 variable "account_id" { type = string }
 variable "oidc_provider_arn" { type = string }
@@ -53,6 +57,18 @@ data "aws_iam_policy_document" "gateway" {
     resources = [aws_secretsmanager_secret.providers.arn]
   }
 
+  statement {
+    sid       = "DecryptProviderSecret"
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [var.kms_key_arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:ViaService"
+      values   = ["secretsmanager.${var.region}.amazonaws.com"]
+    }
+  }
+
   dynamic "statement" {
     for_each = var.enabled ? [1] : []
     content {
@@ -62,8 +78,12 @@ data "aws_iam_policy_document" "gateway" {
         "bedrock:InvokeModel",
         "bedrock:InvokeModelWithResponseStream",
       ]
+      # foundation-model is on-demand. A cross-region inference profile is
+      # arn:aws:bedrock:REGION:ACCOUNT:inference-profile/ID and is listed below
+      # when inference_profile_ids is set. Do not grant bedrock:* .
       resources = concat(
         [for model in var.model_ids : "arn:aws:bedrock:${var.region}::foundation-model/${model}"],
+        [for profile in var.inference_profile_ids : "arn:aws:bedrock:${var.region}:${var.account_id}:inference-profile/${profile}"],
         ["arn:aws:bedrock:${var.region}:${var.account_id}:provisioned-model/*"],
       )
     }

@@ -24,6 +24,7 @@ module "eks" {
   node_min            = var.node_min
   node_desired        = var.node_desired
   node_max            = var.node_max
+  access_role_arns    = var.eks_access_role_arns
 }
 
 module "data" {
@@ -71,4 +72,5 @@ module "identity" {
   identity_store_id = var.identity_store_id
   team_group_names  = var.team_group_names
   log_group_arns    = module.observability.log_group_arns
+  account_id        = var.identity_center_instance_arn == null ? null : data.aws_caller_identity.current.account_id
 }

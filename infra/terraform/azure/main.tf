@@ -42,6 +42,17 @@ variable "location" {
   default     = "westeurope"
 }
 
+variable "eks_oidc_issuer" {
+  description = "EKS OIDC issuer URL, including https://, for the gateway federated credential."
+  type        = string
+}
+
+variable "key_vault_ip_rules" {
+  description = "Deployer CIDRs allowed to reach Key Vault if public access is opened for a break-glass change. Empty while the vault is private."
+  type        = list(string)
+  default     = []
+}
+
 resource "azurerm_resource_group" "ai" {
   name     = "${var.name}-rg"
   location = var.location
@@ -98,6 +109,7 @@ resource "azurerm_key_vault" "ai" {
   network_acls {
     default_action = "Deny"
     bypass         = "AzureServices"
+    ip_rules       = var.key_vault_ip_rules
   }
 }
 
@@ -112,6 +124,11 @@ resource "azurerm_private_endpoint" "vault" {
     private_connection_resource_id = azurerm_key_vault.ai.id
     subresource_names              = ["vault"]
     is_manual_connection           = false
+  }
+
+  private_dns_zone_group {
+    name                 = "vault"
+    private_dns_zone_ids = [azurerm_private_dns_zone.vault.id]
   }
 }
 
@@ -198,6 +215,11 @@ resource "azurerm_private_endpoint" "foundry" {
     subresource_names              = ["account"]
     is_manual_connection           = false
   }
+
+  private_dns_zone_group {
+    name                 = "foundry"
+    private_dns_zone_ids = [azurerm_private_dns_zone.openai.id]
+  }
 }
 
 resource "azuread_group" "payments" {
@@ -206,9 +228,54 @@ resource "azuread_group" "payments" {
   description      = "Product team allowed to use the EU deployment through the gateway."
 }
 
+resource "azurerm_user_assigned_identity" "gateway" {
+  name                = "${var.name}-gateway"
+  location            = azurerm_resource_group.ai.location
+  resource_group_name = azurerm_resource_group.ai.name
+}
+
+resource "azurerm_federated_identity_credential" "eks" {
+  name                = "eks"
+  resource_group_name = azurerm_resource_group.ai.name
+  parent_id           = azurerm_user_assigned_identity.gateway.id
+  audience            = ["api://AzureADTokenExchange"]
+  issuer              = var.eks_oidc_issuer
+  subject             = "system:serviceaccount:aigw:ai-gateway"
+}
+
+resource "azurerm_role_assignment" "gateway_openai" {
+  scope                = azurerm_cognitive_account.foundry.id
+  role_definition_name = "Cognitive Services OpenAI User"
+  principal_id         = azurerm_user_assigned_identity.gateway.principal_id
+}
+
+resource "azurerm_private_dns_zone" "openai" {
+  name                = "privatelink.openai.azure.com"
+  resource_group_name = azurerm_resource_group.ai.name
+}
+
+resource "azurerm_private_dns_zone" "vault" {
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = azurerm_resource_group.ai.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "openai" {
+  name                  = "openai"
+  resource_group_name   = azurerm_resource_group.ai.name
+  private_dns_zone_name = azurerm_private_dns_zone.openai.name
+  virtual_network_id    = azurerm_virtual_network.ai.id
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "vault" {
+  name                  = "vault"
+  resource_group_name   = azurerm_resource_group.ai.name
+  private_dns_zone_name = azurerm_private_dns_zone.vault.name
+  virtual_network_id    = azurerm_virtual_network.ai.id
+}
+
 resource "azurerm_role_assignment" "payments" {
   scope                = azurerm_cognitive_account.foundry.id
-  role_definition_name = "Cognitive Services User"
+  role_definition_name = "Cognitive Services OpenAI User"
   principal_id         = azuread_group.payments.object_id
 }
 

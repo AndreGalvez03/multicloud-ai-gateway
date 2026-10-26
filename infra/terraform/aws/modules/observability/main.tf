@@ -87,6 +87,20 @@ resource "aws_cloudwatch_metric_alarm" "rate_limited" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
+resource "aws_cloudwatch_metric_alarm" "bedrock_throttle" {
+  alarm_name          = "${var.name}-bedrock-throttles"
+  alarm_description   = "Bedrock invocation throttles. See docs/runbooks/bedrock-throttling.md."
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 5
+  metric_name         = "InvocationThrottles"
+  namespace           = "AWS/Bedrock"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 5
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
 resource "aws_cloudwatch_metric_alarm" "budget_blocked" {
   alarm_name          = "${var.name}-budget-blocked"
   alarm_description   = "A team was refused because a monthly budget was exhausted"
