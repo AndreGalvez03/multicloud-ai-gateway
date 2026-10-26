@@ -25,7 +25,7 @@ def test_provisioned_has_no_incremental_token_charge() -> None:
     assert spec is not None
     priced = price_model(spec, 2000, 400, 1200, "provisioned")
     assert priced.incremental_usd == Decimal("0.00000000")
-    assert spec.provisioned_monthly_usd == Decimal("150.00")
+    assert spec.commitment_usd() == Decimal("150.00")
 
 
 def test_cached_tokens_cannot_exceed_input() -> None:

@@ -24,6 +24,7 @@ class RateDecision:
     tokens: int
     retry_after: int
     reason: str | None
+    window_id: int | None = None
 
 
 def decide(
@@ -82,6 +83,24 @@ def consume(
         window_seconds=window_seconds,
     )
     if decision.allowed:
-        session.add(RateWindow(team_id=team_id, tokens=tokens, created_at=now))
+        row = RateWindow(team_id=team_id, tokens=tokens, created_at=now)
+        session.add(row)
         session.flush()
+        return RateDecision(
+            True,
+            decision.requests,
+            decision.tokens,
+            0,
+            None,
+            row.id,
+        )
     return decision
+
+
+def set_window_tokens(session: Session, window_id: int | None, tokens: int) -> None:
+    """Replace the reserved estimate with the actual input plus output tokens."""
+    if window_id is None:
+        return
+    row = session.get(RateWindow, window_id)
+    if row is not None:
+        row.tokens = tokens

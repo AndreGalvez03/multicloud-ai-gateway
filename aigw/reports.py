@@ -84,7 +84,7 @@ class TeamDashboard(TypedDict):
 
 def team_usage(session: Session, team: Team, now: datetime | None = None) -> UsagePayload:
     snapshot = month_snapshot(session, team.id, now)
-    report = cost_report(session, team.id, now)
+    report = cost_report(session, team.id, now, team=team)
     by_model: list[ModelUsage] = []
     raw_models = report["by_model"]
     if isinstance(raw_models, dict):

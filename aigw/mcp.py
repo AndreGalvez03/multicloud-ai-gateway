@@ -12,7 +12,15 @@ from typing import Any
 
 from aigw import __version__
 
-PROTOCOL = "2024-11-05"
+SUPPORTED_PROTOCOLS = ("2024-11-05", "2025-03-26", "2025-06-18")
+PROTOCOL = SUPPORTED_PROTOCOLS[-1]
+
+
+class _Notification:
+    """JSON-RPC notification. The HTTP layer answers 202 with an empty body."""
+
+
+NOTIFICATION = _Notification()
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -46,18 +54,22 @@ def handle_rpc(
     *,
     usage_lookup: UsageLookup,
     model_lookup: ModelLookup,
-) -> dict[str, Any] | None:
+) -> dict[str, Any] | _Notification | None:
     if message.get("jsonrpc") != "2.0" or "method" not in message:
         return _error(message.get("id"), -32600, "invalid request")
     method = message["method"]
     request_id = message.get("id")
     if request_id is None:
-        return None
+        return NOTIFICATION
     if method == "initialize":
+        raw_params = message.get("params")
+        params = raw_params if isinstance(raw_params, dict) else {}
+        requested = params.get("protocolVersion")
+        version = requested if requested in SUPPORTED_PROTOCOLS else PROTOCOL
         return _result(
             request_id,
             {
-                "protocolVersion": PROTOCOL,
+                "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {"name": "aigw", "version": __version__},
             },

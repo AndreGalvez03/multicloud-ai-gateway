@@ -8,7 +8,7 @@ name points at Bedrock, Vertex AI, or Azure AI Foundry. See litellm/config.yaml.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from aigw.pricing import PriceQuote, quote
 
@@ -24,9 +24,20 @@ class ModelSpec:
     output_per_mtok: Decimal
     cache_read_per_mtok: Decimal
     batch_factor: Decimal
-    provisioned_monthly_usd: Decimal
+    provisioned_hourly_usd: Decimal
+    provisioned_model_units: int
+    provisioned_term_hours: int
     litellm_model: str
     supports_provisioned: bool = False
+
+    def commitment_usd(self) -> Decimal:
+        """Hourly rate times model units times the term. Charged even with no traffic."""
+        if not self.supports_provisioned:
+            return Decimal("0.00")
+        units = Decimal(self.provisioned_model_units)
+        hours = Decimal(self.provisioned_term_hours)
+        amount = self.provisioned_hourly_usd * units * hours
+        return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
     def public(self) -> dict[str, object]:
         return {
@@ -39,7 +50,10 @@ class ModelSpec:
             "output_per_mtok": format(self.output_per_mtok, "f"),
             "cache_read_per_mtok": format(self.cache_read_per_mtok, "f"),
             "batch_factor": format(self.batch_factor, "f"),
-            "provisioned_monthly_usd": format(self.provisioned_monthly_usd, "f"),
+            "provisioned_hourly_usd": format(self.provisioned_hourly_usd, "f"),
+            "provisioned_model_units": self.provisioned_model_units,
+            "provisioned_term_hours": self.provisioned_term_hours,
+            "provisioned_commitment_usd": format(self.commitment_usd(), "f"),
             "supports_provisioned": self.supports_provisioned,
             "modes": ["on_demand", "batch"] + (["provisioned"] if self.supports_provisioned else []),
         }
@@ -56,21 +70,25 @@ CATALOG: dict[str, ModelSpec] = {
         output_per_mtok=Decimal("15.00"),
         cache_read_per_mtok=Decimal("0.30"),
         batch_factor=Decimal("0.5"),
-        provisioned_monthly_usd=Decimal("150.00"),
+        provisioned_hourly_usd=Decimal("0.20547945"),
+        provisioned_model_units=1,
+        provisioned_term_hours=730,
         litellm_model="bedrock-claude",
         supports_provisioned=True,
     ),
     "vertex-gemini": ModelSpec(
         name="vertex-gemini",
         provider="vertex",
-        region="us",
+        region="eu",
         kind="chat",
-        description="Gemini Flash class model on Vertex AI. Illustrative list price.",
+        description="Gemini Flash class model on Vertex AI in europe-west1. Illustrative list price.",
         input_per_mtok=Decimal("0.15"),
         output_per_mtok=Decimal("0.60"),
         cache_read_per_mtok=Decimal("0.0375"),
         batch_factor=Decimal("0.5"),
-        provisioned_monthly_usd=Decimal("0"),
+        provisioned_hourly_usd=Decimal("0"),
+        provisioned_model_units=0,
+        provisioned_term_hours=0,
         litellm_model="vertex-gemini",
     ),
     "azure-gpt": ModelSpec(
@@ -83,7 +101,9 @@ CATALOG: dict[str, ModelSpec] = {
         output_per_mtok=Decimal("0.60"),
         cache_read_per_mtok=Decimal("0.075"),
         batch_factor=Decimal("0.5"),
-        provisioned_monthly_usd=Decimal("0"),
+        provisioned_hourly_usd=Decimal("0"),
+        provisioned_model_units=0,
+        provisioned_term_hours=0,
         litellm_model="azure-gpt",
     ),
     "local-llama": ModelSpec(
@@ -97,7 +117,9 @@ CATALOG: dict[str, ModelSpec] = {
         output_per_mtok=Decimal("0.04"),
         cache_read_per_mtok=Decimal("0.02"),
         batch_factor=Decimal("1"),
-        provisioned_monthly_usd=Decimal("0"),
+        provisioned_hourly_usd=Decimal("0"),
+        provisioned_model_units=0,
+        provisioned_term_hours=0,
         litellm_model="local-llama",
     ),
     "embed-titan": ModelSpec(
@@ -110,7 +132,9 @@ CATALOG: dict[str, ModelSpec] = {
         output_per_mtok=Decimal("0"),
         cache_read_per_mtok=Decimal("0"),
         batch_factor=Decimal("1"),
-        provisioned_monthly_usd=Decimal("0"),
+        provisioned_hourly_usd=Decimal("0"),
+        provisioned_model_units=0,
+        provisioned_term_hours=0,
         litellm_model="embed-titan",
     ),
     "embed-azure": ModelSpec(
@@ -123,7 +147,9 @@ CATALOG: dict[str, ModelSpec] = {
         output_per_mtok=Decimal("0"),
         cache_read_per_mtok=Decimal("0"),
         batch_factor=Decimal("1"),
-        provisioned_monthly_usd=Decimal("0"),
+        provisioned_hourly_usd=Decimal("0"),
+        provisioned_model_units=0,
+        provisioned_term_hours=0,
         litellm_model="embed-azure",
     ),
 }

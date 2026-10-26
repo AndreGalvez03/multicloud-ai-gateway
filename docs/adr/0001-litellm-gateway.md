@@ -16,6 +16,6 @@ Locally every cloud model name points at an OpenAI-compatible mock. The same nam
 
 ## Consequences
 
-- Provider outages are handled twice, on purpose. The platform retries the next model its residency rule allows. LiteLLM also has static fallbacks for the US chain. `azure-gpt` has an empty fallback list so an EU call cannot fall through to a US model inside the proxy.
-- `local-llama` is not in the LiteLLM fallback chain. Ollama has no model pulled by `make up`. The platform catalog still lists it, and `make pull-model` fetches `llama3.2` when someone wants that path.
+- The platform owns fallback. It tries the next model its residency rule allows, at most three, and bills the model named in the response. LiteLLM's fallback list is empty so a second layer cannot answer on a model the ledger did not price.
+- `local-llama` is in the platform catalog. Ollama has no model pulled by `make up`. `make pull-model` fetches `llama3.2` when someone wants that path.
 - Spend logs inside LiteLLM are disabled. The ledger in Postgres is the one the budget check reads.

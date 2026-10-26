@@ -158,27 +158,37 @@ def test_client_error_does_not_fall_back(client: TestClient, calls: list[dict[st
 
 def test_batch_and_provisioned_modes(client: TestClient) -> None:
     message = {"role": "user", "content": "price this request please"}
+    refused = client.post(
+        "/v1/chat/completions",
+        headers={**GROWTH, "x-aigw-mode": "batch"},
+        json={"model": "vertex-gemini", "messages": [message], "max_tokens": 32},
+    )
+    assert refused.status_code == 400
+    denied = client.post(
+        "/v1/chat/completions",
+        headers={**GROWTH, "x-aigw-mode": "provisioned"},
+        json={"model": "bedrock-claude", "messages": [message], "max_tokens": 32},
+    )
+    assert denied.status_code == 403
+    patched = client.patch(
+        "/v1/teams/growth",
+        headers=ADMIN,
+        json={"allowed_modes": ["on_demand", "batch", "provisioned"]},
+    )
+    assert patched.status_code == 200
     on_demand = client.post(
         "/v1/chat/completions",
         headers={**GROWTH, "x-aigw-mode": "on_demand"},
         json={"model": "vertex-gemini", "messages": [message], "max_tokens": 32},
     )
     batch = client.post(
-        "/v1/chat/completions",
-        headers={**GROWTH, "x-aigw-mode": "batch"},
+        "/v1/batch/chat",
+        headers=GROWTH,
         json={"model": "vertex-gemini", "messages": [message], "max_tokens": 32},
     )
     assert on_demand.status_code == 200
-    assert batch.status_code == 200
+    assert batch.status_code == 202
     assert float(batch.json()["aigw"]["cost_usd"]) < float(on_demand.json()["aigw"]["cost_usd"])
-
-    provisioned = client.post(
-        "/v1/chat/completions",
-        headers={**GROWTH, "x-aigw-mode": "provisioned"},
-        json={"model": "bedrock-claude", "messages": [message], "max_tokens": 32},
-    )
-    assert provisioned.status_code == 200
-    assert provisioned.json()["aigw"]["cost_usd"] == "0.00000000"
     usage = client.get("/v1/teams/growth/usage").json()
     assert "bedrock-claude" in usage["provisioned_models"]
     assert usage["commitment_usd"] == 150.0
@@ -295,6 +305,41 @@ def test_mcp_is_admin_only_and_read_only(client: TestClient) -> None:
         },
     )
     assert "payments" in usage.json()["result"]["content"][0]["text"]
+    note = client.post(
+        "/mcp",
+        headers=ADMIN,
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+    )
+    assert note.status_code == 202
+    batch = client.post(
+        "/mcp",
+        headers=ADMIN,
+        json=[
+            {"jsonrpc": "2.0", "id": 7, "method": "ping"},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        ],
+    )
+    assert batch.status_code == 200
+    assert isinstance(batch.json(), list)
+
+
+def test_stream_bills_the_model_that_answered(client: TestClient) -> None:
+    before = client.get("/v1/teams/growth/usage").json()
+    response = client.post(
+        "/v1/chat/completions",
+        headers=GROWTH,
+        json={
+            "model": "vertex-gemini",
+            "stream": True,
+            "messages": [{"role": "user", "content": "stream this answer"}],
+            "max_tokens": 16,
+        },
+    )
+    assert response.status_code == 200
+    assert "text/event-stream" in response.headers["content-type"]
+    assert "vertex-gemini" in response.text
+    after = client.get("/v1/teams/growth/usage").json()
+    assert after["requests"] == before["requests"] + 1
 
 
 def _prompt_tokens(body: dict[str, object]) -> int:

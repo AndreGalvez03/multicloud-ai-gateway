@@ -14,11 +14,11 @@ Money is `Decimal`, rounded half up to 8 decimal places, and stored as integer m
 
 Cached tokens are a subset of input tokens. They still count toward the monthly **token** budget. They do not pay the full input rate.
 
-`X-AIGW-Mode` selects the billing mode:
+A team may use a mode only when an admin has put it in `allowed_modes`. The default is on-demand.
 
-- **on_demand** — the token formula above. This is the default.
-- **batch** — the same formula multiplied by the model's `batch_factor` (0.5 for the cloud chat models, 1.0 for the local model). This is a billing mode on the request. It is not the Bedrock batch inference API.
-- **provisioned** — incremental token charge is zero. The model's monthly commitment is added **once** in the cost report when the team has any successful provisioned call on that model. Only `bedrock-claude` supports it (`$150` in the catalog). The Terraform toggle that would buy one model unit is `enable_provisioned_throughput` in `infra/terraform/aws`.
+- **on_demand** — the token formula above. This is the default, and the only mode `POST /v1/chat/completions` accepts.
+- **batch** — the same formula multiplied by the model's `batch_factor` (0.5 for the cloud chat models, 1.0 for the local model). Clients send it to `POST /v1/batch/chat`. It is not the Bedrock batch inference API.
+- **provisioned** — incremental token charge is zero. `bedrock-claude` carries an hourly rate times model units times the term (`0.20547945 * 1 * 730` = `$150.00`). That commitment is added in the cost report for every team entitled to the mode, whether or not the team sent a provisioned call that month. The Terraform toggle that would buy one model unit is `enable_provisioned_throughput` in `infra/terraform/aws`.
 
 ## Worked example
 
@@ -38,13 +38,13 @@ total  = 0.00045000 USD
 
 Batch (`batch_factor` 0.5) is half of that: **$0.00022500**.
 
-Provisioned is refused for `azure-gpt` because the catalog does not mark it as provisioned-capable. The same call on `bedrock-claude` in provisioned mode has an incremental charge of `$0` and adds the `$150` commitment once in `GET /v1/teams/{id}/usage`.
+Provisioned is refused for `azure-gpt` because the catalog does not mark it as provisioned-capable. A `bedrock-claude` call in provisioned mode has an incremental charge of `$0`. Entitling the team to that mode adds the `$150.00` commitment in `GET /v1/teams/{id}/usage`.
 
 `tests/test_pricing.py` locks the two dollar figures above.
 
 ## Budgets
 
-Each team has a monthly token budget and a monthly USD budget. Before the gateway calls upstream it estimates the call as `len(prompt) / 4` input tokens plus `max_tokens` priced as output, with no cache credit. If that estimate would pass 100% of either budget, the call is rejected with HTTP 402 and nothing is sent upstream.
+Each team has a monthly token budget and a monthly USD budget. Before the gateway calls upstream it estimates the call as `len(prompt) / 4` input tokens plus `max_tokens` priced as output, with no cache credit. That estimate is reserved with one conditional UPDATE against `budget_holds` plus the month's settled usage. If it would pass 100% of either budget, the call is rejected with HTTP 402 and nothing is sent upstream. The reservation is committed before the upstream call and replaced by the actual usage when the call returns.
 
 An alert is recorded at 80% when a successful call crosses that line, and at 100% when a call is blocked or when actual usage lands on the budget. Alerts are deduplicated per team, metric, threshold, and month.
 

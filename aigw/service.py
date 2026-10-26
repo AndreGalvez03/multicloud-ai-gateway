@@ -13,18 +13,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from aigw.budgets import crossing_alerts, evaluate_budget
-from aigw.catalog import price_model
-from aigw.guardrails import find_blocked_topic, redact_messages
+from aigw.catalog import get_model, price_model
+from aigw.guardrails import check_output, find_blocked_topic, redact_messages
+from aigw.holds import release, reserve
 from aigw.logging import log_event
 from aigw.metrics import BUDGET, LATENCY, RATE_LIMITS, REQUESTS, SPEND, TOKEN_BUDGET, TOKENS, TOKENS_USED
-from aigw.models import Alert, Team, UsageEvent
+from aigw.models import Alert, IdempotencyRecord, Team, UsageEvent
 from aigw.pricing import from_micros, to_micros
-from aigw.ratelimit import consume
+from aigw.ratelimit import consume, set_window_tokens
 from aigw.routing import select_embedding_model, select_route
 from aigw.settings import Settings
 from aigw.timeutil import month_start, utcnow
 from aigw.tokens import completion_text, estimate_tokens, parse_usage
-from aigw.upstream import UpstreamError, chat_completions, embeddings
+from aigw.upstream import UpstreamError, chat_completions, chat_stream, embeddings
 from aigw.usage import month_snapshot
 
 ALERT_TEXT = {
@@ -44,6 +45,13 @@ class HandleResult:
     headers: dict[str, str] = field(default_factory=dict)
 
 
+def allowed_modes(team: Team) -> set[str]:
+    raw = json.loads(team.allowed_modes or "[]")
+    if not isinstance(raw, list):
+        return {"on_demand"}
+    return {str(item) for item in raw} or {"on_demand"}
+
+
 def handle_chat(
     session: Session,
     *,
@@ -53,10 +61,24 @@ def handle_chat(
     settings: Settings,
     http: httpx.Client,
     now: datetime | None = None,
+    idempotency_key: str | None = None,
+    allow_batch: bool = False,
 ) -> HandleResult:
     now = now or utcnow()
+    if idempotency_key:
+        prior = _idempotent(session, team.id, idempotency_key)
+        if prior is not None:
+            return prior
     if mode not in MODES:
         return _fail(400, f"unknown billing mode: {mode}", "invalid_mode")
+    if mode == "batch" and not allow_batch:
+        return _fail(
+            400,
+            "batch pricing is only available on POST /v1/batch/chat",
+            "invalid_mode",
+        )
+    if mode not in allowed_modes(team):
+        return _fail(403, f"team is not entitled to {mode}", "mode_not_allowed")
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
         return _fail(400, "messages is required", "invalid_request")
@@ -100,15 +122,17 @@ def handle_chat(
     input_est = estimate_tokens(prompt_text)
     preview = price_model(route.model, input_est, max_tokens, 0, mode)
     snapshot = month_snapshot(session, team.id, now)
+    reserved_tokens = input_est + max_tokens
+    reserved_usd = to_micros(preview.incremental_usd)
     decision = evaluate_budget(
         tokens_used=snapshot.total_tokens,
         token_budget=team.monthly_token_budget,
         usd_micros_used=snapshot.cost_micros,
         usd_micros_budget=team.monthly_usd_micros,
-        added_tokens=input_est + max_tokens,
-        added_usd_micros=to_micros(preview.incremental_usd),
+        added_tokens=reserved_tokens,
+        added_usd_micros=reserved_usd,
     )
-    if not decision.allowed:
+    if not decision.allowed or not reserve(session, team, now, reserved_tokens, reserved_usd):
         _record(
             session,
             team=team,
@@ -135,18 +159,21 @@ def handle_chat(
         )
         REQUESTS.labels(team=team.id, model=route.model.name, status="budget_blocked").inc()
         log_event("budget_blocked", team=team.id, model=route.model.name, reason=decision.reason)
+        session.commit()
         return _fail(402, decision.reason or "budget exceeded", "budget_exceeded")
 
+    session.commit()
     rate = consume(
         session,
         team_id=team.id,
         rpm=team.rpm_limit,
         tpm=team.tpm_limit,
-        tokens=input_est,
+        tokens=reserved_tokens,
         now=now,
         window_seconds=settings.rate_window_seconds,
     )
     if not rate.allowed:
+        release(session, team.id, now, reserved_tokens, reserved_usd)
         _record(
             session,
             team=team,
@@ -160,6 +187,7 @@ def handle_chat(
         RATE_LIMITS.labels(team=team.id).inc()
         REQUESTS.labels(team=team.id, model=route.model.name, status="rate_limited").inc()
         log_event("rate_limited", team=team.id, model=route.model.name, limit=rate.reason)
+        session.commit()
         return _fail(
             429,
             rate.reason or "rate limit exceeded",
@@ -204,10 +232,12 @@ def handle_chat(
                 break
     latency_ms = max(0, int((time.perf_counter() - started) * 1000))
     if upstream_body is None:
+        release(session, team.id, now, reserved_tokens, reserved_usd)
+        failed = tried[-1] if tried else route.model.name
         _record(
             session,
             team=team,
-            model=route.model.name,
+            model=failed,
             provider=route.model.provider,
             mode=mode,
             status="error",
@@ -215,14 +245,29 @@ def handle_chat(
             requests=1,
             latency_ms=latency_ms,
         )
-        REQUESTS.labels(team=team.id, model=route.model.name, status="error").inc()
-        LATENCY.labels(team=team.id, model=route.model.name).observe(latency_ms / 1000)
-        log_event("upstream_error", team=team.id, tried=tried, status=None if error is None else error.status)
-        detail = error.message if error else "unknown upstream error"
-        return _fail(502, f"upstream failed after {tried}: {detail}", "upstream_error")
+        REQUESTS.labels(team=team.id, model=failed, status="error").inc()
+        LATENCY.labels(team=team.id, model=failed).observe(latency_ms / 1000)
+        log_event(
+            "upstream_error",
+            team=team.id,
+            model=failed,
+            tried=tried,
+            status=None if error is None else error.status,
+            detail=None if error is None else error.detail,
+        )
+        session.commit()
+        return _remember(
+            session,
+            team.id,
+            idempotency_key,
+            now,
+            _fail(502, "upstream request failed", "upstream_error"),
+        )
 
     text = completion_text(upstream_body)
-    input_tokens, output_tokens, cached_tokens = parse_usage(upstream_body, prompt_text, text)
+    used = _model_reported(upstream_body, used)
+    output_text, output_block = check_output(text, topics)
+    input_tokens, output_tokens, cached_tokens = parse_usage(upstream_body, prompt_text, output_text)
     priced = price_model(used, input_tokens, output_tokens, cached_tokens, mode)
     cost_micros = to_micros(priced.incremental_usd)
     _record(
@@ -240,6 +285,8 @@ def handle_chat(
         requests=1,
         latency_ms=latency_ms,
     )
+    release(session, team.id, now, reserved_tokens, reserved_usd)
+    set_window_tokens(session, rate.window_id, input_tokens + output_tokens)
     _store_alerts(
         session,
         team,
@@ -269,10 +316,26 @@ def handle_chat(
         output_tokens=output_tokens,
         cached_tokens=cached_tokens,
         cost_micros=cost_micros,
+        latency_ms=latency_ms,
         tried=tried,
     )
     response = dict(upstream_body)
     response["model"] = used.name
+    if output_block:
+        response["choices"] = [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": "The model output was blocked by a team guardrail.",
+                },
+                "finish_reason": "content_filter",
+            }
+        ]
+    elif isinstance(response.get("choices"), list) and response["choices"]:
+        choice = response["choices"][0]
+        if isinstance(choice, dict) and isinstance(choice.get("message"), dict):
+            choice["message"]["content"] = output_text
     response["aigw"] = {
         "team": team.id,
         "model": used.name,
@@ -284,7 +347,7 @@ def handle_chat(
         "cost_usd": format(priced.incremental_usd, "f"),
         "cached_tokens": cached_tokens,
     }
-    return HandleResult(
+    result = HandleResult(
         200,
         response,
         {
@@ -293,6 +356,8 @@ def handle_chat(
             "x-aigw-cost-usd": format(priced.incremental_usd, "f"),
         },
     )
+    session.commit()
+    return _remember(session, team.id, idempotency_key, now, result)
 
 
 def embed_for_team(
@@ -311,16 +376,18 @@ def embed_for_team(
     input_est = estimate_tokens(joined)
     preview = price_model(spec, input_est, 0, 0, "on_demand")
     snapshot = month_snapshot(session, team.id, now)
+    reserved_usd = to_micros(preview.incremental_usd)
     decision = evaluate_budget(
         tokens_used=snapshot.total_tokens,
         token_budget=team.monthly_token_budget,
         usd_micros_used=snapshot.cost_micros,
         usd_micros_budget=team.monthly_usd_micros,
         added_tokens=input_est,
-        added_usd_micros=to_micros(preview.incremental_usd),
+        added_usd_micros=reserved_usd,
     )
-    if not decision.allowed:
+    if not decision.allowed or not reserve(session, team, now, input_est, reserved_usd):
         return [], _fail(402, decision.reason or "budget exceeded", "budget_exceeded")
+    session.commit()
     rate = consume(
         session,
         team_id=team.id,
@@ -331,6 +398,8 @@ def embed_for_team(
         window_seconds=settings.rate_window_seconds,
     )
     if not rate.allowed:
+        release(session, team.id, now, input_est, reserved_usd)
+        session.commit()
         RATE_LIMITS.labels(team=team.id).inc()
         return [], _fail(
             429,
@@ -347,7 +416,10 @@ def embed_for_team(
             timeout=settings.request_timeout_seconds,
         )
     except UpstreamError as exc:
-        return [], _fail(502, exc.message, "upstream_error")
+        release(session, team.id, now, input_est, reserved_usd)
+        session.commit()
+        log_event("upstream_error", team=team.id, model=spec.name, status=exc.status, detail=exc.detail)
+        return [], _fail(502, "upstream request failed", "upstream_error")
     data = body.get("data")
     if not isinstance(data, list):
         return [], _fail(502, "embedding response missing data", "upstream_error")
@@ -372,8 +444,169 @@ def embed_for_team(
         cost_micros=to_micros(priced.incremental_usd),
         requests=1,
     )
+    release(session, team.id, now, input_est, reserved_usd)
+    set_window_tokens(session, rate.window_id, input_tokens)
     _publish_team(session, team, now)
+    session.commit()
     return vectors, None
+
+
+def iter_chat_sse(
+    session: Session,
+    *,
+    team: Team,
+    payload: dict[str, Any],
+    mode: str,
+    settings: Settings,
+    http: httpx.Client,
+    now: datetime | None = None,
+) -> Any:
+    """SSE passthrough. The final usage chunk settles the reservation; a disconnect releases it."""
+    now = now or utcnow()
+    if mode == "batch" or mode not in allowed_modes(team):
+        if mode == "batch":
+            yield _sse_error(400, "batch pricing is only available on POST /v1/batch/chat")
+        else:
+            yield _sse_error(403, f"team is not entitled to {mode}")
+        return
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        yield _sse_error(400, "messages is required")
+        return
+    normalized = [
+        {"role": str(item.get("role", "user")), "content": str(item.get("content", ""))}
+        for item in messages
+        if isinstance(item, dict)
+    ]
+    topics = json.loads(team.blocked_topics or "[]")
+    blocked = find_blocked_topic(normalized, topics)
+    if blocked:
+        yield _sse_error(400, f"blocked topic: {blocked}")
+        return
+    redacted, _redactions = redact_messages(normalized)
+    route = select_route(str(payload.get("model") or "auto"), team.residency)
+    if not route.allowed or route.model is None:
+        yield _sse_error(403, route.reason or "residency blocked")
+        return
+    max_tokens = _clamp_max_tokens(payload.get("max_tokens", 256))
+    prompt_text = "\n".join(item["content"] for item in redacted)
+    input_est = estimate_tokens(prompt_text)
+    preview = price_model(route.model, input_est, max_tokens, 0, mode)
+    reserved_tokens = input_est + max_tokens
+    reserved_usd = to_micros(preview.incremental_usd)
+    if not reserve(session, team, now, reserved_tokens, reserved_usd):
+        yield _sse_error(402, "budget exceeded")
+        return
+    session.commit()
+    rate = consume(
+        session,
+        team_id=team.id,
+        rpm=team.rpm_limit,
+        tpm=team.tpm_limit,
+        tokens=reserved_tokens,
+        now=now,
+        window_seconds=settings.rate_window_seconds,
+    )
+    if not rate.allowed:
+        release(session, team.id, now, reserved_tokens, reserved_usd)
+        session.commit()
+        yield _sse_error(429, rate.reason or "rate limit exceeded")
+        return
+    session.commit()
+    settled = False
+    usage = (input_est, 0, 0)
+    served = route.model
+    try:
+        for name in [route.model.name, *route.fallbacks][:3]:
+            candidate = select_route(name, team.residency).model
+            if candidate is None:
+                continue
+            response = chat_stream(
+                http,
+                base_url=settings.litellm_base_url,
+                api_key=settings.litellm_api_key,
+                payload={"model": candidate.litellm_model, "messages": redacted, "max_tokens": max_tokens},
+                timeout=settings.request_timeout_seconds,
+            )
+            try:
+                if response.status_code >= 400:
+                    response.read()
+                    if response.status_code < 500 and response.status_code != 429:
+                        break
+                    continue
+                served = candidate
+                for line in response.iter_lines():
+                    if not line:
+                        yield b"\n"
+                        continue
+                    parsed = _usage_from_sse(line)
+                    if parsed is not None:
+                        usage = parsed[:3]
+                        served = _model_reported({"model": parsed[3]}, served)
+                    yield (line + "\n").encode()
+                settled = True
+                break
+            finally:
+                response.close()
+        text = ""
+        input_tokens, output_tokens, cached_tokens = usage[0], usage[1], usage[2]
+        if not settled:
+            release(session, team.id, now, reserved_tokens, reserved_usd)
+            session.commit()
+            yield _sse_error(502, "upstream request failed")
+            return
+        priced = price_model(served, input_tokens, output_tokens, cached_tokens, mode)
+        _record(
+            session,
+            team=team,
+            model=served.name,
+            provider=served.provider,
+            mode=mode,
+            status="ok",
+            now=now,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            cost_micros=to_micros(priced.incremental_usd),
+            requests=1,
+        )
+        release(session, team.id, now, reserved_tokens, reserved_usd)
+        set_window_tokens(session, rate.window_id, input_tokens + output_tokens)
+        _publish_team(session, team, now)
+        session.commit()
+        del text
+    except GeneratorExit:
+        if not settled:
+            release(session, team.id, now, reserved_tokens, reserved_usd)
+            session.commit()
+        raise
+
+
+def _usage_from_sse(line: str) -> tuple[int, int, int, str] | None:
+    if not line.startswith("data:"):
+        return None
+    raw = line[len("data:") :].strip()
+    if raw == "[DONE]":
+        return None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        return None
+    prompt = int(usage.get("prompt_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or 0)
+    raw_details = usage.get("prompt_tokens_details")
+    details = raw_details if isinstance(raw_details, dict) else {}
+    cached = int(details.get("cached_tokens") or 0)
+    model = str(payload.get("model") or "")
+    return prompt, completion, min(cached, prompt), model
+
+
+def _sse_error(status: int, message: str) -> bytes:
+    body = json.dumps({"error": {"message": message, "code": status}})
+    return f"data: {body}\n\n".encode()
 
 
 def publish_all(session: Session, now: datetime | None = None) -> None:
@@ -463,6 +696,50 @@ def _clamp_max_tokens(value: object) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         return 256
     return max(1, min(value, 4096))
+
+
+def _model_reported(body: dict[str, Any], fallback: Any) -> Any:
+    reported = body.get("model")
+    if not isinstance(reported, str):
+        return fallback
+    name = reported.split("/")[-1]
+    if name.startswith("mock-"):
+        name = name.removeprefix("mock-")
+    spec = get_model(name)
+    return spec or fallback
+
+
+def _idempotent(session: Session, team_id: str, key: str) -> HandleResult | None:
+    row = session.scalar(
+        select(IdempotencyRecord).where(IdempotencyRecord.team_id == team_id, IdempotencyRecord.key == key)
+    )
+    if row is None:
+        return None
+    parsed = json.loads(row.body)
+    if not isinstance(parsed, dict):
+        return None
+    return HandleResult(row.status_code, parsed)
+
+
+def _remember(
+    session: Session,
+    team_id: str,
+    key: str | None,
+    now: datetime,
+    result: HandleResult,
+) -> HandleResult:
+    if key:
+        session.add(
+            IdempotencyRecord(
+                team_id=team_id,
+                key=key,
+                status_code=result.status_code,
+                body=json.dumps(result.body),
+                created_at=now,
+            )
+        )
+        session.commit()
+    return result
 
 
 def _fail(

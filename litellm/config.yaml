@@ -19,7 +19,8 @@
 #     litellm_params:
 #       model: azure/gpt-4o-mini
 #       api_base: os.environ/AZURE_API_BASE
-#       api_key: os.environ/AZURE_API_KEY
+#       api_version: "2024-10-21"
+#       # Entra ID on the pod identity. Do not set a static api_key.
 
 model_list:
   - model_name: bedrock-claude
@@ -53,12 +54,11 @@ model_list:
       api_base: http://ollama:11434
 
 router_settings:
-  num_retries: 1
+  num_retries: 0
   timeout: 30
-  fallbacks:
-    - bedrock-claude: ["vertex-gemini", "azure-gpt"]
-    - vertex-gemini: ["azure-gpt"]
-    - azure-gpt: []
+  # The platform owns fallback so it can bill the model that actually answered
+  # and keep an EU team off a US model. Do not add a second fallback list here.
+  fallbacks: []
 
 litellm_settings:
   drop_params: true

@@ -6,7 +6,7 @@ def test_eu_auto_stays_in_the_eu_or_local() -> None:
     assert decision.allowed
     assert decision.model is not None
     assert decision.model.name == "azure-gpt"
-    assert decision.fallbacks == ("local-llama",)
+    assert decision.fallbacks == ("vertex-gemini", "local-llama")
 
 
 def test_eu_cannot_call_a_us_model() -> None:

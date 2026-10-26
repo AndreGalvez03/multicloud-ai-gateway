@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from aigw.catalog import ModelSpec, chat_models, get_model
 
 PREFERRED: dict[str, tuple[str, ...]] = {
-    "eu": ("azure-gpt", "local-llama"),
+    "eu": ("azure-gpt", "vertex-gemini", "local-llama"),
     "us": ("bedrock-claude", "vertex-gemini", "local-llama"),
     "global": ("bedrock-claude", "vertex-gemini", "azure-gpt", "local-llama"),
 }

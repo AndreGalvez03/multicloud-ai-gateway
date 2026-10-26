@@ -38,6 +38,25 @@ def _upstream(request: httpx.Request) -> httpx.Response:
     if "SIMULATE_BAD_REQUEST" in user:
         return httpx.Response(400, json={"error": "bad request"})
     prompt_tokens = max(1, len(user) // 4)
+    if body.get("stream"):
+        chunk = {
+            "id": "chatcmpl-test",
+            "model": model,
+            "choices": [{"index": 0, "delta": {"content": f"[{model}] {user}"}, "finish_reason": None}],
+        }
+        done = {
+            "id": "chatcmpl-test",
+            "model": model,
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": 4,
+                "total_tokens": prompt_tokens + 4,
+                "prompt_tokens_details": {"cached_tokens": 0},
+            },
+        }
+        payload = f"data: {json.dumps(chunk)}\n\ndata: {json.dumps(done)}\n\ndata: [DONE]\n\n"
+        return httpx.Response(200, content=payload, headers={"content-type": "text/event-stream"})
     return httpx.Response(
         200,
         json={

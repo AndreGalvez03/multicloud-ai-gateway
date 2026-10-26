@@ -1,4 +1,4 @@
-from aigw.mcp import handle_rpc
+from aigw.mcp import NOTIFICATION, handle_rpc
 
 
 def test_initialize_and_list_tools() -> None:
@@ -60,7 +60,7 @@ def test_unknown_method_and_notification() -> None:
             usage_lookup=lambda _team: {},
             model_lookup=lambda: [],
         )
-        is None
+        is NOTIFICATION
     )
 
 

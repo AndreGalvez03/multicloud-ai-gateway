@@ -25,7 +25,7 @@ def key_prefix(value: str) -> str:
 
 
 def new_virtual_key() -> str:
-    return "local-vk-" + secrets.token_hex(8)
+    return "local-vk-" + secrets.token_urlsafe(32)
 
 
 def safe_equals(got: str, expected: str) -> bool:

@@ -56,12 +56,28 @@ def redact_messages(messages: list[dict[str, str]]) -> tuple[list[dict[str, str]
     return redacted, total
 
 
+def _normalize(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+
 def find_blocked_topic(messages: list[dict[str, str]], topics: list[str]) -> str | None:
+    """Match a topic as a whole phrase, not as a substring of another word."""
     if not topics:
         return None
-    haystack = "\n".join(message.get("content", "") for message in messages).lower()
+    haystack = f" {_normalize(chr(10).join(message.get('content', '') for message in messages))} "
     for topic in topics:
-        needle = topic.strip().lower()
-        if needle and needle in haystack:
+        needle = _normalize(topic)
+        if needle and f" {needle} " in haystack:
             return topic
     return None
+
+
+def check_output(text: str, topics: list[str]) -> tuple[str, str | None]:
+    """Redact model output and refuse a blocked topic.
+
+    Replace this function to call Bedrock ApplyGuardrail or Azure Content
+    Safety. The platform only depends on the (text, topics) -> (text, topic) shape.
+    """
+    redacted = redact_text(text)
+    blocked = find_blocked_topic([{"role": "assistant", "content": text}], topics)
+    return redacted.text, blocked

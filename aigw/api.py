@@ -19,7 +19,7 @@ from typing import Annotated, Any, Literal
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
@@ -29,7 +29,7 @@ from aigw.auth import bearer, hash_key, key_prefix, new_virtual_key, safe_equals
 from aigw.catalog import CATALOG
 from aigw.db import init_db, make_engine
 from aigw.logging import configure_logging, log_event
-from aigw.mcp import handle_rpc
+from aigw.mcp import NOTIFICATION, handle_rpc
 from aigw.metrics import render_metrics
 from aigw.models import Team, VirtualKey
 from aigw.pricing import to_micros
@@ -37,10 +37,15 @@ from aigw.rag import InMemoryVectorStore, PgVectorStore, chunk_text
 from aigw.reports import dashboard_summary, team_usage
 from aigw.seed import seed
 from aigw.service import embed_for_team, handle_chat, publish_all
-from aigw.settings import Settings, get_settings
+from aigw.settings import Settings, get_settings, load_runtime_secrets
 from aigw.timeutil import month_start, utcnow
 
 PROMETHEUS_MEDIA = "text/plain; version=0.0.4; charset=utf-8"
+ModeName = Literal["on_demand", "batch", "provisioned"]
+
+
+def _default_modes() -> list[ModeName]:
+    return ["on_demand"]
 
 
 class TeamCreate(BaseModel):
@@ -52,6 +57,7 @@ class TeamCreate(BaseModel):
     rpm_limit: int = Field(gt=0, le=100_000)
     tpm_limit: int = Field(gt=0, le=50_000_000)
     blocked_topics: list[str] = Field(default_factory=list)
+    allowed_modes: list[ModeName] = Field(default_factory=_default_modes)
 
 
 class TeamUpdate(BaseModel):
@@ -61,6 +67,7 @@ class TeamUpdate(BaseModel):
     tpm_limit: int | None = Field(default=None, gt=0, le=50_000_000)
     blocked_topics: list[str] | None = None
     residency: Literal["eu", "us", "global"] | None = None
+    allowed_modes: list[ModeName] | None = None
 
 
 class KeyCreate(BaseModel):
@@ -78,6 +85,7 @@ class ChatIn(BaseModel):
     messages: list[ChatMessage]
     max_tokens: int = 256
     temperature: float | None = None
+    stream: bool = False
 
 
 class EmbedIn(BaseModel):
@@ -98,7 +106,7 @@ class RagQuery(BaseModel):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    settings = settings or get_settings()
+    settings = load_runtime_secrets(settings or get_settings())
     configure_logging()
 
     @asynccontextmanager
@@ -134,7 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         CORSMiddleware,
         allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
         allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["Authorization", "Content-Type", "X-AIGW-Mode"],
+        allow_headers=["Authorization", "Content-Type", "X-AIGW-Mode", "Idempotency-Key"],
     )
 
     @app.middleware("http")
@@ -227,8 +235,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def pricing(_reader: Annotated[None, Depends(require_reader)]) -> dict[str, Any]:
         return {
             "note": "Illustrative list prices. Cached input is billed at cache_read_per_mtok. "
-            "Batch multiplies the token charge by batch_factor. Provisioned throughput adds "
-            "provisioned_monthly_usd once per model per month and does not add a per-token charge.",
+            "Batch pricing applies only to POST /v1/batch/chat. Provisioned throughput bills "
+            "hourly rate times model units times the term, even when the team sends no traffic.",
             "models": [spec.public() for spec in CATALOG.values()],
         }
 
@@ -260,6 +268,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             rpm_limit=body.rpm_limit,
             tpm_limit=body.tpm_limit,
             blocked_topics=json.dumps(body.blocked_topics),
+            allowed_modes=json.dumps(body.allowed_modes),
             created_at=utcnow(),
         )
         session.add(team)
@@ -289,6 +298,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             team.blocked_topics = json.dumps(body.blocked_topics)
         if body.residency is not None:
             team.residency = body.residency
+        if body.allowed_modes is not None:
+            team.allowed_modes = json.dumps(body.allowed_modes)
         session.flush()
         publish_all(session)
         return _team_out(team)
@@ -370,15 +381,63 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         team: Annotated[Team, Depends(require_team)],
         session: Annotated[Session, Depends(get_session)],
         x_aigw_mode: Annotated[str | None, Header()] = None,
+        idempotency_key: Annotated[str | None, Header()] = None,
+    ) -> Response:
+        mode = (x_aigw_mode or "on_demand").lower()
+        if body.stream:
+            from aigw.service import iter_chat_sse
+
+            factory = request.app.state.session_factory
+            payload = body.model_dump()
+            team_id = team.id
+
+            def generate() -> Any:
+                stream_session = factory()
+                try:
+                    attached = stream_session.get(Team, team_id)
+                    if attached is None:
+                        return
+                    yield from iter_chat_sse(
+                        stream_session,
+                        team=attached,
+                        payload=payload,
+                        mode=mode,
+                        settings=request.app.state.settings,
+                        http=request.app.state.http,
+                    )
+                finally:
+                    stream_session.close()
+
+            return StreamingResponse(generate(), media_type="text/event-stream")
+        result = handle_chat(
+            session,
+            team=team,
+            payload=body.model_dump(),
+            mode=mode,
+            settings=request.app.state.settings,
+            http=request.app.state.http,
+            idempotency_key=idempotency_key,
+        )
+        return _json(result)
+
+    @app.post("/v1/batch/chat", status_code=202)
+    def batch_chat(
+        body: ChatIn,
+        request: Request,
+        team: Annotated[Team, Depends(require_team)],
+        session: Annotated[Session, Depends(get_session)],
     ) -> JSONResponse:
         result = handle_chat(
             session,
             team=team,
             payload=body.model_dump(),
-            mode=(x_aigw_mode or "on_demand").lower(),
+            mode="batch",
             settings=request.app.state.settings,
             http=request.app.state.http,
+            allow_batch=True,
         )
+        if result.status_code == 200:
+            result.status_code = 202
         return _json(result)
 
     @app.post("/v1/embeddings")
@@ -486,11 +545,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return _json(result)
 
     @app.post("/mcp")
-    def mcp(
-        message: dict[str, Any],
+    async def mcp(
+        request: Request,
         _admin: Annotated[None, Depends(require_admin)],
         session: Annotated[Session, Depends(get_session)],
-    ) -> JSONResponse:
+    ) -> Response:
+        payload = await request.json()
+
         def usage_lookup(team_id: str) -> dict[str, Any]:
             team = session.get(Team, team_id)
             if team is None:
@@ -500,9 +561,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         def model_lookup() -> list[dict[str, Any]]:
             return [spec.public() for spec in CATALOG.values()]
 
-        response = handle_rpc(message, usage_lookup=usage_lookup, model_lookup=model_lookup)
-        if response is None:
-            return JSONResponse(content={"ok": True})
+        if isinstance(payload, list):
+            responses = []
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                one = handle_rpc(item, usage_lookup=usage_lookup, model_lookup=model_lookup)
+                if one is not NOTIFICATION and one is not None:
+                    responses.append(one)
+            return JSONResponse(content=responses)
+
+        if not isinstance(payload, dict):
+            return JSONResponse(status_code=400, content={"error": "invalid request"})
+        response = handle_rpc(payload, usage_lookup=usage_lookup, model_lookup=model_lookup)
+        if response is NOTIFICATION or response is None:
+            return Response(status_code=202)
         return JSONResponse(content=response)
 
     return app
@@ -529,6 +602,7 @@ def _team_out(team: Team) -> dict[str, Any]:
         "rpm_limit": team.rpm_limit,
         "tpm_limit": team.tpm_limit,
         "blocked_topics": json.loads(team.blocked_topics or "[]"),
+        "allowed_modes": json.loads(team.allowed_modes or '["on_demand"]'),
     }
 
 

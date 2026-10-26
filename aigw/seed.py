@@ -101,6 +101,7 @@ def seed(session: Session) -> None:
                     rpm_limit=_as_int(fixture["rpm"]),
                     tpm_limit=_as_int(fixture["tpm"]),
                     blocked_topics=json.dumps(blocked),
+                    allowed_modes=json.dumps(["on_demand"]),
                     created_at=now,
                 )
             )
