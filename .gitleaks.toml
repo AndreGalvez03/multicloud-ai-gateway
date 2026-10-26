@@ -1,0 +1,20 @@
+title = "multicloud-ai-gateway"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local demo fixtures. They authenticate nothing outside this compose stack."
+regexTarget = "match"
+regexes = [
+  '''local-vk-[a-z0-9-]+''',
+  '''local-admin-token''',
+  '''local-dev-master-key''',
+  '''local-grafana-admin''',
+  '''mock-provider-key''',
+  '''aigw_local''',
+]
+paths = [
+  '''dashboard/node_modules''',
+  '''\.terraform''',
+]
