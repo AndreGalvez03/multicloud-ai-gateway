@@ -1,6 +1,11 @@
 # Multicloud AI Gateway
 
+[![CI](https://github.com/AndreGalvez03/multicloud-ai-gateway/actions/workflows/ci.yml/badge.svg)](https://github.com/AndreGalvez03/multicloud-ai-gateway/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 An internal platform for product teams that need a model, a budget, and an answer to "where did this prompt go."
+
+![Team usage, spend against budget, and model mix](docs/images/dashboard.png)
 
 Teams call one OpenAI-shaped API. The platform checks the virtual key, redacts or blocks the prompt, picks a model that matches the team's residency, and stops the call if it would break the monthly token or dollar budget. [LiteLLM](litellm/config.yaml) then talks to Amazon Bedrock, Vertex AI, Azure AI Foundry, or a self-hosted model. Locally those cloud names are an OpenAI-compatible mock, so the whole path runs with Docker and no cloud account.
 
@@ -22,7 +27,7 @@ flowchart LR
   prom --> graf[Grafana]
 ```
 
-In AWS the same boxes run on a private EKS cluster. The gateway pod uses IRSA to call Bedrock. Vertex uses Workload Identity. Azure AI Foundry uses a managed identity, a private endpoint, and an Entra ID group. Humans get a read permission set and an explicit deny on `bedrock:InvokeModel`. See [docs/adr](docs/adr).
+In AWS the same boxes run on a private EKS cluster. The gateway pod uses IRSA to call Bedrock. Vertex trusts that EKS issuer through a Workload Identity pool. Azure AI Foundry trusts it with a user-assigned identity and a federated credential, a private endpoint, and an Entra ID group. Humans get a read permission set, an account assignment, and an explicit deny on `bedrock:InvokeModel`. See [docs/adr](docs/adr).
 
 ## What you can try
 
@@ -58,39 +63,24 @@ Seeded keys, all local fixtures: `local-vk-payments` (EU), `local-vk-growth` (gl
 
 ## Dashboard
 
-The console reads `GET /v1/dashboard/summary`. Payments is selected on load because it is closest to its dollar budget.
-
-![Team usage, spend against budget, and model mix](docs/images/dashboard.png)
+The console reads `GET /v1/dashboard/summary`. Payments is selected on load because it is closest to its dollar budget. The nginx proxy for that one GET does not hold the admin token.
 
 ## Skills demonstrated
 
-The repo is the place these are practiced. A certification is not claimed, and there is no Go in this tree. The console is TypeScript.
-
 | Skill | Where it shows up |
 | --- | --- |
-| English as the working language | This README, `docs/adr`, `docs/runbooks` |
-| AWS as the primary cloud, with GCP and Azure workloads | `infra/terraform/aws`, `infra/terraform/gcp`, `infra/terraform/azure` |
-| Python and Bash, and Git | `aigw/`, `scripts/`, `.github/workflows/ci.yml` |
-| Terraform, remote state, per-environment tfvars | `infra/terraform/README.md`, `infra/terraform/aws/envs/` |
-| Docker and Kubernetes | `Dockerfile`, `docker-compose.yml`, `deploy/helm/aigw`, `deploy/kind/` |
-| CI: lint, test, image build, terraform, helm, secret scan | `.github/workflows/ci.yml` |
-| Linux networking | VPC and security groups in `infra/terraform/aws/modules/network`, NetworkPolicy in the chart, Azure NSG |
-| CloudWatch, Prometheus, and Grafana | `observability/`, `infra/terraform/aws/modules/observability` |
-| Troubleshooting a running system | `docs/runbooks/` |
-| Coding assistants, used with a review and a test | `docs/ai-assisted-development.md`, `AGENTS.md` |
-| Amazon Bedrock, including provisioned throughput | `infra/terraform/aws/modules/bedrock`, `aigw/catalog.py` |
-| Vertex AI and Workload Identity | `infra/terraform/gcp` |
-| Azure AI Foundry and an Entra ID group | `infra/terraform/azure` |
-| Third-party APIs and input vs output token billing | `aigw/pricing.py`, `docs/cost-model.md` |
-| On-demand, batch, and provisioned modes | `X-AIGW-Mode`, `aigw/pricing.py` |
-| An AI gateway (LiteLLM) for limits, quotas, and budgets | `litellm/config.yaml`, `aigw/budgets.py`, `aigw/ratelimit.py` |
-| Prompt caching, RAG, embeddings, a vector store | `aigw/rag.py`, `deploy/postgres/init.sql` |
-| Guardrails, data residency, and privacy | `aigw/guardrails.py`, `aigw/routing.py`, [ADR 0005](docs/adr/0005-data-residency.md) |
-| MCP, and a self-hosted model path (Ollama / vLLM) | `aigw/mcp.py`, `local-llama` in the catalog |
+| Python, TypeScript, and Bash | `aigw/`, `dashboard/`, `scripts/` |
+| Terraform on AWS, with a smaller GCP and Azure footprint | `infra/terraform/aws`, `infra/terraform/gcp`, `infra/terraform/azure` |
+| Private EKS, Helm, and kind | `infra/terraform/aws/modules/eks`, `deploy/helm/aigw`, `scripts/kind-up.sh` |
+| Bedrock, Vertex from EKS, and Azure AI Foundry | `infra/terraform/aws/modules/bedrock`, `infra/terraform/gcp`, `infra/terraform/azure` |
+| Token pricing, prompt caching, batch, and provisioned throughput | `aigw/pricing.py`, `aigw/catalog.py`, `docs/cost-model.md` |
+| Budgets, RPM/TPM, guardrails, and residency | `aigw/holds.py`, `aigw/ratelimit.py`, `aigw/guardrails.py`, `aigw/routing.py` |
+| LiteLLM gateway and a self-hosted model path | `litellm/config.yaml`, `local-llama` in the catalog |
 | IAM Identity Center and Entra ID | `infra/terraform/aws/modules/identity`, `infra/terraform/azure` |
-| TypeScript | `dashboard/` |
+| Prometheus, Alertmanager, Grafana, and CloudWatch | `observability/`, `infra/terraform/aws/modules/observability` |
+| MCP tools for usage and the model catalog | `aigw/mcp.py` |
 
-Okta is not connected. [ADR 0004](docs/adr/0004-identity.md) says how a group from another identity provider would map onto the same team record. The gateway would still be the only caller of Bedrock.
+[ADR 0004](docs/adr/0004-identity.md) describes how a group from another identity provider would map onto the same team record. The gateway would still be the only caller of Bedrock.
 
 ## Secrets
 
@@ -99,16 +89,16 @@ Nothing in git is a cloud credential. `.env.example` lists the compose fixtures.
 In a real account:
 
 - Bedrock is called with IRSA. There is no Bedrock API key.
-- Vertex uses Workload Identity. Azure uses a managed identity, and local key auth on the cognitive account is disabled.
-- A third-party provider key lives in AWS Secrets Manager. Terraform creates the secret and does not set a value. External Secrets projects it into the cluster (`deploy/examples/external-secret.yaml`). The chart does not install that CRD.
+- Vertex uses a Workload Identity pool that trusts the EKS issuer. Azure uses a user-assigned identity with a federated credential, and local key auth on the cognitive account is disabled.
+- A third-party provider key lives in AWS Secrets Manager at `aigw/providers`. Terraform creates the secret and does not set a value. The chart sets `AIGW_SECRETS_MANAGER_SECRET` to that name and can mount the External Secrets projection `ai-gateway-providers`. The chart does not install that CRD.
 
 ## What is intentionally simplified
 
 - Cloud model names are served by the mock. `litellm/config.yaml` has the real `bedrock/`, `vertex_ai/`, and `azure/` blocks commented above the mock entries.
 - Terraform is validated (`make tf-validate`) and never applied.
 - Prices are illustrative. The `$0.00045000` example is tested, not quoted from a provider.
-- Batch mode is a billing header, not the Bedrock batch API. Provisioned throughput is a catalog rule plus a Terraform resource that is off by default.
-- The rate-limit window is correct for one writer and racy across replicas. ADR 0003 names the follow-up.
+- Batch mode is `POST /v1/batch/chat` for a team that is allowed to use it. It is not the Bedrock batch API. Provisioned throughput is an hourly commitment in the catalog plus a Terraform resource that is off by default.
+- The budget reservation is one conditional UPDATE. The rate-limit window is still racy across replicas. ADR 0003 names that follow-up.
 - `make up` starts Ollama and does not download a weight.
 - The EKS module has one NAT gateway. Production wants one per AZ.
 - Identity Center groups are created only when the instance ARN and identity store id are supplied.

@@ -1,13 +1,33 @@
 export function usd(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "$0.00";
+  }
+  const abs = Math.abs(value);
+  if (abs >= 1000) {
+    return value.toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+      maximumFractionDigits: 0,
+    });
+  }
+  if (abs > 0 && abs < 0.01) {
+    return value.toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 6,
+    });
+  }
   return value.toLocaleString("en-US", {
     style: "currency",
     currency: "USD",
-    maximumFractionDigits: value < 20 ? 2 : 0,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   });
 }
 
 export function compactTokens(value: number): string {
-  if (value >= 1_000_000) {
+  if (value >= 999_950) {
     return `${(value / 1_000_000).toFixed(1)}M`;
   }
   if (value >= 1_000) {

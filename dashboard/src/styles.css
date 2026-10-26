@@ -86,15 +86,34 @@ h3 { margin: 18px 0 8px; font-size: 14px; letter-spacing: 0.04em; text-transform
 }
 
 .stat { flex: 1; padding: 14px 16px; }
-.label, .detail, .muted { color: #5c6570; }
+.label, .stat-detail, .muted { color: #5c6570; }
 .label { margin: 0; font-size: 13px; }
 .value { margin: 4px 0; font-family: "Source Serif 4", Georgia, serif; font-size: 30px; }
-.detail { margin: 0; font-size: 13px; }
+.stat-detail { margin: 0; font-size: 13px; }
 
 .layout { gap: 14px; align-items: flex-start; }
 .panel { padding: 16px 16px 8px; }
 .panel:first-child { flex: 1.4; }
-.detail { flex: 0.9; padding-bottom: 16px; }
+.team-detail { flex: 0.9; padding-bottom: 16px; }
+.table-scroll { overflow-x: auto; }
+.refresh {
+  border: 1px solid #e2dacb;
+  background: #fffdf8;
+  border-radius: 999px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+.bar-fill.mix { background: #6b6258; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
 .panel-head p { margin: 4px 0 12px; color: #5c6570; }
 
 table { width: 100%; border-collapse: collapse; }
