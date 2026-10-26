@@ -1,0 +1,13 @@
+---
+description: How agents change this repository
+alwaysApply: true
+---
+
+Follow AGENTS.md and docs/ai-assisted-development.md.
+
+- Read the code you are about to change. Keep the existing error shape, money type (Decimal, stored as micro-dollars), and residency rules.
+- Do not add `from __future__ import annotations` to `aigw/api.py`. FastAPI resolves those annotations against module globals and the routes start returning 422.
+- Do not log prompts or completions. Do not paste secrets, customer data, or production exports into chat, fixtures, or commits.
+- Local values (`local-admin-token`, `local-vk-*`, `aigw_local`) are compose fixtures. Cloud credentials come from IAM roles or a secret manager, never from a committed key.
+- Prove the change: pytest, ruff, mypy, dashboard tests, shellcheck, or terraform fmt/validate, whichever the diff touches. Do not apply Terraform.
+- An EU team stays on EU or local models. Do not add a US model to that fallback chain.
