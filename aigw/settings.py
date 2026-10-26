@@ -59,10 +59,11 @@ def load_runtime_secrets(settings: Settings) -> Settings:
 
 
 def _from_secrets_manager(settings: Settings) -> Settings:
+    import importlib
     import json
 
     try:
-        import boto3  # type: ignore[import-untyped]
+        boto3 = importlib.import_module("boto3")
     except ImportError as exc:
         raise RuntimeError("boto3 is required to read AIGW_SECRETS_MANAGER_SECRET") from exc
     client = boto3.client("secretsmanager")
