@@ -14,7 +14,7 @@ Accepted.
 | --- | --- | --- |
 | Human on a product or platform team | IAM Identity Center permission set `AIGatewayRead`, membership via a team group. On Azure, an Entra ID group. | Read logs and budgets. Explicit deny on `bedrock:InvokeModel`. |
 | Product team application | A virtual key (`local-vk-…` in the demo). The plaintext is returned once. The database stores SHA-256 and a 12-character prefix. | Call `/v1/chat/completions` as that team, under that team's residency, budget, and rate limit. |
-| Gateway process | IRSA on AWS, Workload Identity on GCP, a managed identity on Azure. | Invoke the models the catalog lists, and read one Secrets Manager secret for third-party keys. |
+| Gateway process | IRSA on AWS (`aud` `sts.amazonaws.com`), plus projected tokens for GCP (`aigw-eks`) and Azure (`api://AzureADTokenExchange`). | Invoke the models the catalog lists, and read one Secrets Manager secret for third-party keys. |
 
 Okta is not wired. A group claim from Okta would map to the same team record; the gateway still would not hand the human a Bedrock credential. The Identity Center module stays empty until `identity_center_instance_arn` and `identity_store_id` are set, so a plan of the example does not try to create groups in an account that has no Identity Center.
 

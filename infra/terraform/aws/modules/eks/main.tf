@@ -201,7 +201,8 @@ resource "aws_eks_addon" "cloudwatch" {
   addon_name                  = "amazon-cloudwatch-observability"
   addon_version               = "v2.5.0-eksbuild.1"
   resolve_conflicts_on_create = "OVERWRITE"
-  depends_on                  = [aws_iam_role_policy_attachment.nodes_cloudwatch]
+  # Pod logs land in /aws/containerinsights/<cluster>/application. Metric filters read that group.
+  depends_on = [aws_iam_role_policy_attachment.nodes_cloudwatch]
 }
 
 resource "aws_iam_role_policy_attachment" "nodes_cloudwatch" {

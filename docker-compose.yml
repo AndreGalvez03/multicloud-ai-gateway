@@ -108,7 +108,7 @@ services:
       retries: 10
 
   alertmanager:
-    image: prom/alertmanager:v0.27.0
+    image: prom/alertmanager:v0.27.0@sha256:e13b6ed5cb929eeaee733479dce55e10eb3bc2e9c4586c705a4e8da41e5eacf5
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
     volumes:

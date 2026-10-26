@@ -47,6 +47,12 @@ resource "aws_sns_topic_policy" "alerts" {
   policy = data.aws_iam_policy_document.sns.json
 }
 
+resource "aws_sns_topic_subscription" "budget_email" {
+  topic_arn = aws_sns_topic.alerts.arn
+  protocol  = "email"
+  endpoint  = var.budget_alert_email
+}
+
 resource "aws_cloudwatch_log_metric_filter" "rate_limited" {
   name           = "${var.name}-rate-limited"
   log_group_name = aws_cloudwatch_log_group.platform.name

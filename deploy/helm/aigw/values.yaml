@@ -14,6 +14,8 @@ service:
   port: 8080
   nodePort: null
 
+# Terraform secret name is "${name}/providers". The variable default name is aigw.
+# dev.tfvars is aigw-dev (values-dev.yaml). prod.tfvars is aigw-prod (values-prod.yaml).
 secretsManagerSecret: aigw/providers
 databaseSecret: ai-gateway-db
 adminSecret: ai-gateway-admin
@@ -30,6 +32,19 @@ networkPolicy:
   ingressApp: dashboard
 
 irsaRoleArn: ""
+
+# IRSA keeps aud=sts.amazonaws.com. These projected tokens are the other audiences.
+# gcpTokenAudience matches google_iam_workload_identity_pool_provider allowed_audiences.
+# azureTokenAudience matches azurerm_federated_identity_credential.
+workloadIdentity:
+  gcpTokenAudience: aigw-eks
+  gcpPoolId: aigw-eks
+  gcpProviderId: eks-oidc
+  gcpProjectNumber: PROJECT_NUMBER
+  gcpServiceAccountEmail: ai-gateway@PROJECT_ID.iam.gserviceaccount.com
+  azureTokenAudience: api://AzureADTokenExchange
+  azureClientId: ""
+  azureTenantId: ""
 
 litellmBaseUrl: http://litellm.aigw.svc.cluster.local:4000
 

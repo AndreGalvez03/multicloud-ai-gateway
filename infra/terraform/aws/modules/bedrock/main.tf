@@ -158,3 +158,4 @@ resource "aws_bedrock_provisioned_model_throughput" "claude" {
 
 output "gateway_role_arn" { value = aws_iam_role.gateway.arn }
 output "providers_secret_arn" { value = aws_secretsmanager_secret.providers.arn }
+output "providers_secret_name" { value = aws_secretsmanager_secret.providers.name }

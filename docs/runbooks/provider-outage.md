@@ -58,7 +58,7 @@ kubectl -n aigw logs deploy/ai-gateway --since=15m | grep 'upstream request fail
 kubectl -n aigw get pods -l app.kubernetes.io/name=ai-gateway
 ```
 
-Logs Insights on `/aigw/<name>/platform`:
+Logs Insights on `/aws/containerinsights/<name>/application`:
 
 ```
 fields @timestamp, team, model

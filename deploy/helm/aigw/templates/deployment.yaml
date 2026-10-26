@@ -67,6 +67,18 @@ spec:
                   key: litellm
             - name: AIGW_SECRETS_MANAGER_SECRET
               value: {{ .Values.secretsManagerSecret | quote }}
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/run/secrets/gcp/credential-config.json
+            - name: AZURE_FEDERATED_TOKEN_FILE
+              value: /var/run/secrets/azure/token
+            {{- with .Values.workloadIdentity.azureClientId }}
+            - name: AZURE_CLIENT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.workloadIdentity.azureTenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ . | quote }}
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -89,6 +101,33 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
+            - name: gcp-wif
+              mountPath: /var/run/secrets/gcp
+              readOnly: true
+            - name: azure-wif
+              mountPath: /var/run/secrets/azure
+              readOnly: true
       volumes:
         - name: tmp
           emptyDir: {}
+        - name: gcp-wif
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: {{ .Values.workloadIdentity.gcpTokenAudience | quote }}
+              - configMap:
+                  name: {{ include "aigw.fullname" . }}-gcp
+                  items:
+                    - key: credential-config.json
+                      path: credential-config.json
+        - name: azure-wif
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: {{ .Values.workloadIdentity.azureTokenAudience | quote }}

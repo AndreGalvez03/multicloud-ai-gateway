@@ -62,7 +62,8 @@ module "observability" {
   log_retention_days = 365
   monthly_budget_usd = var.monthly_bedrock_budget_usd
   budget_alert_email = var.budget_alert_email
-  platform_log_group = "/aigw/${var.name}/platform"
+  # The amazon-cloudwatch-observability add-on writes pod logs here.
+  platform_log_group = "/aws/containerinsights/${var.name}/application"
 }
 
 module "identity" {

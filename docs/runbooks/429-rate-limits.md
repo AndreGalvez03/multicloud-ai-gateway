@@ -58,7 +58,7 @@ curl -s -X PATCH localhost:8080/v1/teams/sandbox \
 kubectl -n aigw logs deploy/ai-gateway --since=15m | grep rate_limited
 ```
 
-The same events land in the CloudWatch log group `/aigw/<name>/platform` once the `amazon-cloudwatch-observability` add-on is running. A Logs Insights query:
+The same events land in the CloudWatch log group `/aws/containerinsights/<name>/application`. That is where the `amazon-cloudwatch-observability` add-on writes pod logs, and where the metric filters read. A Logs Insights query:
 
 ```
 fields @timestamp, team, model

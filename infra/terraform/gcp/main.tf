@@ -77,6 +77,10 @@ resource "google_iam_workload_identity_pool_provider" "eks" {
   attribute_condition = "assertion.sub==\"system:serviceaccount:${var.namespace}:${var.k8s_service_account}\""
   oidc {
     issuer_uri = var.eks_oidc_issuer
+    # The IRSA token is aud=sts.amazonaws.com. The chart projects a second
+    # token with this audience. An empty list would require the provider's
+    # canonical name, which that IRSA token does not carry.
+    allowed_audiences = ["aigw-eks"]
   }
 }
 
@@ -90,8 +94,13 @@ output "gateway_service_account" {
   value = google_service_account.gateway.email
 }
 
+output "gcp_token_audience" {
+  description = "Audience for the projected service account token. The chart value workloadIdentity.gcpTokenAudience must stay aigw-eks."
+  value       = "aigw-eks"
+}
+
 output "workload_identity_credential_config" {
-  description = "External-account config for the gateway pod. The token file is the EKS projected service account token."
+  description = "External-account config. Mount it at GOOGLE_APPLICATION_CREDENTIALS. The file it reads is the projected token, not the IRSA token."
   value = jsonencode({
     type                              = "external_account"
     audience                          = "//iam.googleapis.com/projects/${data.google_project.this.number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.eks.workload_identity_pool_id}/providers/${google_iam_workload_identity_pool_provider.eks.workload_identity_pool_provider_id}"
@@ -99,7 +108,8 @@ output "workload_identity_credential_config" {
     token_url                         = "https://sts.googleapis.com/v1/token"
     service_account_impersonation_url = "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${google_service_account.gateway.email}:generateAccessToken"
     credential_source = {
-      file = "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
+      file   = "/var/run/secrets/gcp/token"
+      format = { type = "text" }
     }
   })
 }

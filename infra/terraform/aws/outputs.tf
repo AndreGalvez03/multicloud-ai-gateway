@@ -12,6 +12,11 @@ output "providers_secret_arn" {
   value       = module.bedrock.providers_secret_arn
 }
 
+output "providers_secret_name" {
+  description = "Set the chart secretsManagerSecret and the ExternalSecret remote key to this. It is $${var.name}/providers."
+  value       = module.bedrock.providers_secret_name
+}
+
 output "vpc_id" {
   value = module.network.vpc_id
 }

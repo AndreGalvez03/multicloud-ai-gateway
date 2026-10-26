@@ -93,8 +93,8 @@ Nothing in git is a cloud credential. `.env.example` lists the compose fixtures.
 In a real account:
 
 - Bedrock is called with IRSA. There is no Bedrock API key.
-- Vertex uses a Workload Identity pool that trusts the EKS issuer. Azure uses a user-assigned identity with a federated credential, and local key auth on the cognitive account is disabled.
-- A third-party provider key lives in AWS Secrets Manager at `aigw/providers`. Terraform creates the secret and does not set a value. The chart sets `AIGW_SECRETS_MANAGER_SECRET` to that name and can mount the External Secrets projection `ai-gateway-providers`. The chart does not install that CRD.
+- Vertex uses a Workload Identity pool that trusts the EKS issuer. Azure uses a user-assigned identity with a federated credential, and local key auth on the cognitive account is disabled. The IRSA token audience is `sts.amazonaws.com`, so the chart projects a second token for GCP (`aigw-eks`) and a third for Azure (`api://AzureADTokenExchange`).
+- A third-party provider key lives in AWS Secrets Manager at `${name}/providers` (`aigw-prod/providers` for `envs/prod.tfvars`). Terraform creates the secret and does not set a value. The chart value `secretsManagerSecret` and `deploy/examples/external-secret.yaml` use that same name. The chart does not install the External Secrets CRD.
 
 ## What is intentionally simplified
 

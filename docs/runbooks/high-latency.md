@@ -65,7 +65,7 @@ kubectl -n aigw logs deploy/ai-gateway --since=15m | grep completion
 kubectl -n aigw top pods
 ```
 
-Logs Insights on `/aigw/<name>/platform`:
+Logs Insights on `/aws/containerinsights/<name>/application`:
 
 ```
 fields @timestamp, team, model, latency_ms

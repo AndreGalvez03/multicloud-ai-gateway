@@ -48,7 +48,7 @@ curl -s -X PATCH localhost:8080/v1/teams/payments \
 kubectl -n aigw logs deploy/ai-gateway --since=1h | grep budget_blocked
 ```
 
-Logs Insights on `/aigw/<name>/platform`:
+Logs Insights on `/aws/containerinsights/<name>/application`:
 
 ```
 fields @timestamp, team

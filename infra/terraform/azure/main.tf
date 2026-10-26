@@ -48,7 +48,7 @@ variable "eks_oidc_issuer" {
 }
 
 variable "key_vault_ip_rules" {
-  description = "Deployer CIDRs allowed to reach Key Vault if public access is opened for a break-glass change. Empty while the vault is private."
+  description = "CIDRs allowed through the Key Vault firewall. Public access stays off when this is empty, so only the private endpoint works. A non-empty list turns public access on and these rules are the allow list."
   type        = list(string)
   default     = []
 }
@@ -96,6 +96,7 @@ resource "azurerm_subnet_network_security_group_association" "endpoints" {
 }
 
 resource "azurerm_key_vault" "ai" {
+  #checkov:skip=CKV_AZURE_189: Public access is on only when key_vault_ip_rules is non-empty, so those firewall rules apply. The default list is empty and public access stays off.
   name                          = "${replace(var.name, "-", "")}kv"
   location                      = azurerm_resource_group.ai.location
   resource_group_name           = azurerm_resource_group.ai.name
@@ -103,7 +104,7 @@ resource "azurerm_key_vault" "ai" {
   sku_name                      = "standard"
   purge_protection_enabled      = true
   soft_delete_retention_days    = 90
-  public_network_access_enabled = false
+  public_network_access_enabled = length(var.key_vault_ip_rules) > 0
   rbac_authorization_enabled    = true
 
   network_acls {
@@ -217,8 +218,11 @@ resource "azurerm_private_endpoint" "foundry" {
   }
 
   private_dns_zone_group {
-    name                 = "foundry"
-    private_dns_zone_ids = [azurerm_private_dns_zone.openai.id]
+    name = "foundry"
+    private_dns_zone_ids = [
+      azurerm_private_dns_zone.openai.id,
+      azurerm_private_dns_zone.cognitive.id,
+    ]
   }
 }
 
@@ -254,9 +258,21 @@ resource "azurerm_private_dns_zone" "openai" {
   resource_group_name = azurerm_resource_group.ai.name
 }
 
+resource "azurerm_private_dns_zone" "cognitive" {
+  name                = "privatelink.cognitiveservices.azure.com"
+  resource_group_name = azurerm_resource_group.ai.name
+}
+
 resource "azurerm_private_dns_zone" "vault" {
   name                = "privatelink.vaultcore.azure.net"
   resource_group_name = azurerm_resource_group.ai.name
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "cognitive" {
+  name                  = "cognitive"
+  resource_group_name   = azurerm_resource_group.ai.name
+  private_dns_zone_name = azurerm_private_dns_zone.cognitive.name
+  virtual_network_id    = azurerm_virtual_network.ai.id
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "openai" {
@@ -281,6 +297,16 @@ resource "azurerm_role_assignment" "payments" {
 
 output "foundry_endpoint" {
   value = azurerm_cognitive_account.foundry.endpoint
+}
+
+output "gateway_client_id" {
+  description = "Chart value workloadIdentity.azureClientId. The federated token audience is api://AzureADTokenExchange."
+  value       = azurerm_user_assigned_identity.gateway.client_id
+}
+
+output "tenant_id" {
+  description = "Chart value workloadIdentity.azureTenantId."
+  value       = data.azurerm_client_config.current.tenant_id
 }
 
 output "payments_group_id" {

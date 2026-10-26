@@ -1,6 +1,6 @@
 # terraform init -backend-config=backend.hcl
 # One state key per environment: aws/dev/terraform.tfstate, aws/prod/terraform.tfstate.
-# The lock table is DynamoDB. The bucket uses a customer-managed KMS key.
+# Locking uses the S3 lockfile (use_lockfile). The bucket uses a customer-managed KMS key.
 bucket       = "example-aigw-tfstate"
 key          = "aws/dev/terraform.tfstate"
 region       = "us-east-1"

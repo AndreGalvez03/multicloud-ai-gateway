@@ -39,15 +39,16 @@ That is `terraform fmt` plus `init -backend=false` and `validate` in each root. 
 ## Identity and secrets
 
 - Humans get an IAM Identity Center permission set (`AIGatewayRead`) that can read logs and budgets and is explicitly denied `bedrock:InvokeModel`. The set and the team groups are created only when `identity_center_instance_arn` and `identity_store_id` are set.
-- The gateway pod uses IRSA (`system:serviceaccount:aigw:ai-gateway`) to invoke the listed foundation models and to read one Secrets Manager secret. The secret resource has no `secret_string`. A rotation Lambda is account-specific and is intentionally not bundled.
-- Third-party API keys are injected with External Secrets. `deploy/examples/external-secret.yaml` is the contract; it is not part of the Helm chart, because the CRD is not installed by this repo.
+- The gateway pod uses IRSA (`system:serviceaccount:aigw:ai-gateway`) to invoke the listed foundation models and to read one Secrets Manager secret. That token's audience is `sts.amazonaws.com`. GCP allows `aigw-eks` and Azure expects `api://AzureADTokenExchange`, so the chart projects one service account token per audience and points `GOOGLE_APPLICATION_CREDENTIALS` and `AZURE_FEDERATED_TOKEN_FILE` at those files. The secret resource has no `secret_string`. A rotation Lambda is account-specific and is intentionally not bundled.
+- Third-party API keys are injected with External Secrets. The remote key is `${name}/providers` (output `providers_secret_name`). `deploy/helm/aigw/values-prod.yaml` and `deploy/examples/external-secret.yaml` both use `aigw-prod/providers`. The example is not part of the Helm chart, because the CRD is not installed by this repo.
 - EU traffic is a separate stack. See [ADR 0005](../../docs/adr/0005-data-residency.md). `boundary = "eu"` should run with `enable_bedrock = false` so prompts are not handled by a US-region cluster.
 
 ## Checkov exceptions
 
-Six checks are skipped on the resource they actually refer to, with the reason in a `#checkov:skip` comment:
+Checkov reports seven skipped checks. Each `#checkov:skip` sits on the resource it refers to:
 
-- The KMS key policy root statement must use `kms:*` on `*`. Application roles do not.
-- The Identity Center read policy uses `cloudwatch:ListMetrics` and `budgets:ViewBudget`, which have no resource ARN, and an account-wide Bedrock deny.
-- Secrets Manager rotation is a Lambda in the target account. Terraform does not store the secret value.
-- The Azure key is a software RSA key in a private Premium-capable vault. An HSM key is an organization decision, not something this example should pretend to buy.
+- `CKV_AWS_356`, `CKV_AWS_111`, and `CKV_AWS_109` on the KMS key policy. The root statement has to be `kms:*` on `*`. Application roles are not granted that.
+- `CKV_AWS_356` on the Identity Center read policy. `cloudwatch:ListMetrics` and `budgets:ViewBudget` have no resource ARN, and the Bedrock deny is account-wide.
+- `CKV2_AWS_57` on the Secrets Manager secret. Rotation is a Lambda in the target account. Terraform does not store the secret value.
+- `CKV_AZURE_112` on the Key Vault key. This example uses a software RSA key. An HSM key is an organization decision.
+- `CKV_AZURE_189` on the Key Vault. Public network access is an expression: off when `key_vault_ip_rules` is empty, on when those rules need a public path. Checkov only accepts a literal `false`.
