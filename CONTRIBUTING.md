@@ -24,6 +24,8 @@ make helm-lint
 
 `terraform apply` is out of scope. Do not add a workflow job that plans against a live account.
 
+Action SHAs in `.github/workflows/ci.yml` are updated by hand. In a real organization, Renovate or Dependabot can do that job.
+
 ## Secrets
 
 Do not commit cloud keys, `.env`, or a Terraform state file. `.env.example` holds the local fixtures. If a change needs a credential, document the IAM role or the secret manager path instead of a value. gitleaks runs in CI.
