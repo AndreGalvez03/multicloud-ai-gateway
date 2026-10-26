@@ -32,8 +32,5 @@ def _add_missing_columns(engine: Engine) -> None:
         return
     with engine.begin() as connection:
         connection.execute(
-            text(
-                "ALTER TABLE teams ADD COLUMN allowed_modes VARCHAR NOT NULL "
-                "DEFAULT '[\"on_demand\"]'"
-            )
+            text("ALTER TABLE teams ADD COLUMN allowed_modes VARCHAR NOT NULL DEFAULT '[\"on_demand\"]'")
         )
