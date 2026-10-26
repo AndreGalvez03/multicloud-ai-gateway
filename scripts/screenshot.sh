@@ -85,8 +85,47 @@ if [[ "${chrome_status}" -ne 0 && "${chrome_status}" -ne 124 ]]; then
 fi
 
 python3 - "${out}" <<'PY'
-import pathlib, sys
+import pathlib
+import sys
+
 path = pathlib.Path(sys.argv[1])
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+
+if Image is not None:
+    image = Image.open(path).convert("RGB")
+    width, height = image.size
+    background = image.getpixel((8, height - 8))
+
+    def differs(pixel: tuple[int, int, int]) -> bool:
+        return any(abs(channel - base) > 14 for channel, base in zip(pixel, background))
+
+    def first(span, axis: str) -> int:
+        for index in span:
+            if axis == "y":
+                hit = any(differs(image.getpixel((x, index))) for x in range(0, width, 3))
+            else:
+                hit = any(differs(image.getpixel((index, y))) for y in range(0, height, 3))
+            if hit:
+                return index
+        return span[0]
+
+    top = first(range(height), "y")
+    bottom = first(range(height - 1, -1, -1), "y")
+    left = first(range(width), "x")
+    right = first(range(width - 1, -1, -1), "x")
+    pad = 24
+    image.crop(
+        (
+            max(0, left - pad),
+            max(0, top - pad),
+            min(width, right + 1 + pad),
+            min(height, bottom + 1 + pad),
+        )
+    ).save(path, optimize=True)
+
 size = path.stat().st_size
 if size < 10000:
     raise SystemExit(f"screenshot looks empty ({size} bytes)")

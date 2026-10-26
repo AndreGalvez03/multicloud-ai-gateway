@@ -50,6 +50,8 @@ make up
 
 Then open the dashboard at <http://localhost:5173>, Grafana at <http://localhost:3000> (anonymous Viewer), and Prometheus at <http://localhost:9090>. The platform API is on port 8080, LiteLLM on 4000, and the mock's fault switch on 8088.
 
+![Latency, error rate, and spend in Grafana](docs/images/grafana.png)
+
 `make up` builds the images and waits until the health check passes. It does not pull a Llama weight. `make pull-model` fetches `llama3.2` into Ollama if you want the self-hosted route for real.
 
 A usage report, once `pip install -e .` has put the CLI on your path:
