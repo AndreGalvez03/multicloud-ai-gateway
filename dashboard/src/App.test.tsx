@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import type { DashboardSummary } from "./types";
 
@@ -30,6 +30,12 @@ const summary: DashboardSummary = {
 };
 
 describe("App", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("shows a loading state and then the team", async () => {
     vi.stubGlobal(
       "fetch",
@@ -50,6 +56,43 @@ describe("App", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain("offline");
     });
+  });
+
+  it("aborts the in-flight load when refresh is clicked again", async () => {
+    const signals: AbortSignal[] = [];
+    let releaseFirst: (() => void) | undefined;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string, init?: RequestInit) => {
+        const signal = init?.signal;
+        if (signal) {
+          signals.push(signal);
+        }
+        if (signals.length === 1) {
+          return new Promise((resolve) => {
+            releaseFirst = () => {
+              resolve({ ok: true, json: async () => summary });
+            };
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => summary,
+        });
+      }),
+    );
+    render(<App />);
+    await waitFor(() => {
+      expect(signals).toHaveLength(1);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => {
+      expect(signals).toHaveLength(2);
+    });
+    expect(signals[0]?.aborted).toBe(true);
+    expect(signals[1]?.aborted).toBe(false);
+    releaseFirst?.();
+    expect(await screen.findByRole("button", { name: "Payments" })).toBeTruthy();
   });
 
   it("shows an empty state", async () => {

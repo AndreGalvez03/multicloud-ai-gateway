@@ -65,7 +65,7 @@ Seeded keys, all local fixtures: `local-vk-payments` (EU), `local-vk-growth` (gl
 
 ## Dashboard
 
-The console reads `GET /v1/dashboard/summary`. Payments is selected on load because it is closest to its dollar budget. The nginx proxy for that one GET does not hold the admin token.
+The console reads `GET /v1/dashboard/summary`. Payments is selected on load because it is closest to its dollar or token budget. The nginx proxy for that one GET does not hold the admin token.
 
 ## Skills demonstrated
 

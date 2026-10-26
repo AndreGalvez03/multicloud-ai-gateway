@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { compactTokens, percent, tone, usd } from "./format";
 import type { DashboardSummary, TeamSummary } from "./types";
 
@@ -8,11 +8,15 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
 
+  const cancelLoad = useRef<(() => void) | null>(null);
+
   const load = useCallback(() => {
+    cancelLoad.current?.();
+    const controller = new AbortController();
+    let cancelled = false;
     setLoading(true);
     setError(null);
-    let cancelled = false;
-    fetch("/api/v1/dashboard/summary")
+    fetch("/api/v1/dashboard/summary", { signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) {
           throw new Error(`platform returned HTTP ${response.status}`);
@@ -36,22 +40,32 @@ export function App() {
         });
       })
       .catch((reason: unknown) => {
-        if (!cancelled) {
-          setData(null);
-          setError(reason instanceof Error ? reason.message : "could not load usage");
+        if (cancelled || (reason instanceof DOMException && reason.name === "AbortError")) {
+          return;
         }
+        setData(null);
+        setError(reason instanceof Error ? reason.message : "could not load usage");
       })
       .finally(() => {
         if (!cancelled) {
           setLoading(false);
         }
       });
-    return () => {
+    const cancel = () => {
       cancelled = true;
+      controller.abort();
     };
+    cancelLoad.current = cancel;
+    return cancel;
   }, []);
 
-  useEffect(() => load(), [load]);
+  useEffect(() => {
+    load();
+    return () => {
+      cancelLoad.current?.();
+      cancelLoad.current = null;
+    };
+  }, [load]);
 
   const team = data?.teams.find((item) => item.id === selected) ?? null;
   const warningTeams = data?.teams.filter((item) => (
@@ -75,7 +89,7 @@ export function App() {
           <span className="pill">local</span>
           <span>{data ? data.month : "—"}</span>
           {data && <time dateTime={data.generated_at}>{data.generated_at.slice(0, 16).replace("T", " ")} UTC</time>}
-          <button type="button" className="refresh" onClick={() => load()}>Refresh</button>
+          <button type="button" className="refresh" onClick={() => { load(); }}>Refresh</button>
         </div>
       </header>
 

@@ -120,6 +120,7 @@ table { width: 100%; border-collapse: collapse; }
 th { text-align: left; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase; color: #5c6570; font-weight: 600; }
 th, td { padding: 10px 8px; border-top: 1px solid #efe7d8; vertical-align: middle; }
 tr.selected { background: #f7f3ea; }
+tr.selected td:first-child { box-shadow: inset 4px 0 0 #0e6b62; }
 .link {
   display: block;
   padding: 0;
