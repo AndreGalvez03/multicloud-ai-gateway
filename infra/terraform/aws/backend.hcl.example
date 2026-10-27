@@ -1,0 +1,9 @@
+# terraform init -backend-config=backend.hcl
+# One state key per environment: aws/dev/terraform.tfstate, aws/prod/terraform.tfstate.
+# Locking uses the S3 lockfile (use_lockfile). The bucket uses a customer-managed KMS key.
+bucket       = "example-aigw-tfstate"
+key          = "aws/dev/terraform.tfstate"
+region       = "us-east-1"
+encrypt      = true
+kms_key_id   = "arn:aws:kms:us-east-1:123456789012:key/example"
+use_lockfile = true

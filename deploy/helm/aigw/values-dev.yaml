@@ -1,0 +1,2 @@
+# Matches infra/terraform/aws/envs/dev.tfvars (name = "aigw-dev").
+secretsManagerSecret: aigw-dev/providers

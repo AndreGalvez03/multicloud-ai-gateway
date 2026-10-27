@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aigw.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "aigw.labels" . | nindent 4 }}
+data:
+  AIGW_ENV: prod
+  AIGW_ALLOW_OPEN_READS: "false"
+  AIGW_SEED_DEMO_DATA: "false"
+  AIGW_LITELLM_BASE_URL: {{ .Values.litellmBaseUrl | quote }}

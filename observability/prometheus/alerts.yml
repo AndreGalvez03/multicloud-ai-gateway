@@ -1,0 +1,57 @@
+groups:
+  - name: aigw
+    rules:
+      - alert: TeamBudgetWarning
+        expr: aigw_team_spend_usd / aigw_team_budget_usd > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Team {{ $labels.team }} is over 80% of its USD budget"
+      - alert: TeamBudgetExhausted
+        expr: aigw_team_spend_usd / aigw_team_budget_usd >= 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Team {{ $labels.team }} has exhausted its USD budget"
+      - alert: HighErrorRate
+        expr: |
+          (
+            sum by (team) (rate(aigw_requests_total{status="error"}[5m]))
+            /
+            sum by (team) (rate(aigw_requests_total[5m]))
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Team {{ $labels.team }} error rate is above 5%"
+      - alert: HighLatencyP95
+        expr: histogram_quantile(0.95, sum by (le) (rate(aigw_request_latency_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Gateway p95 latency is above 2 seconds"
+      - alert: GatewayDown
+        expr: up{job="platform"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The platform target is down"
+      - alert: LiteLLMDown
+        expr: up{job="litellm"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LiteLLM is down"
+      - alert: RateLimitSpike
+        expr: sum by (team) (rate(aigw_rate_limit_hits_total[5m])) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Team {{ $labels.team }} is hitting 429s"

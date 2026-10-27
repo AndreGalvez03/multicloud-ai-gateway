@@ -1,0 +1,14 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "aigw.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "aigw.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "aigw.selectorLabels" . | nindent 6 }}
+{{- end }}

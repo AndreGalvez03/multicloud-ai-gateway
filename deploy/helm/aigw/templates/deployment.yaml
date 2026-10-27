@@ -1,0 +1,133 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aigw.fullname" . }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "aigw.labels" . | nindent 4 }}
+  annotations:
+    checkov.io/skip1: CKV_K8S_35=The process reads AIGW_* from the environment. The values come from Secrets, not from the chart.
+    checkov.io/skip2: CKV_K8S_38=IRSA needs the projected service account token on this pod.
+    checkov.io/skip3: CKV_K8S_43=The release tag is chosen at install time. Base images in CI are pinned by digest.
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "aigw.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "aigw.selectorLabels" . | nindent 8 }}
+      annotations:
+        checkov.io/skip1: CKV_K8S_35=The process reads AIGW_* from the environment. The values come from Secrets, not from the chart.
+        checkov.io/skip2: CKV_K8S_38=IRSA needs the projected service account token on this pod.
+        checkov.io/skip3: CKV_K8S_43=The release tag is chosen at install time. Base images in CI are pinned by digest.
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.service.port | quote }}
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: {{ include "aigw.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: platform
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: {{ include "aigw.fullname" . }}
+            {{- if .Values.providersSecret.enabled }}
+            - secretRef:
+                name: {{ .Values.providersSecret.name }}
+            {{- end }}
+          env:
+            - name: AIGW_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseSecret }}
+                  key: url
+            - name: AIGW_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.adminSecret }}
+                  key: token
+            - name: AIGW_LITELLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.adminSecret }}
+                  key: litellm
+            - name: AIGW_SECRETS_MANAGER_SECRET
+              value: {{ .Values.secretsManagerSecret | quote }}
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: /var/run/secrets/gcp/credential-config.json
+            - name: AZURE_FEDERATED_TOKEN_FILE
+              value: /var/run/secrets/azure/token
+            {{- with .Values.workloadIdentity.azureClientId }}
+            - name: AZURE_CLIENT_ID
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.workloadIdentity.azureTenantId }}
+            - name: AZURE_TENANT_ID
+              value: {{ . | quote }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: gcp-wif
+              mountPath: /var/run/secrets/gcp
+              readOnly: true
+            - name: azure-wif
+              mountPath: /var/run/secrets/azure
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: gcp-wif
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: {{ .Values.workloadIdentity.gcpTokenAudience | quote }}
+              - configMap:
+                  name: {{ include "aigw.fullname" . }}-gcp
+                  items:
+                    - key: credential-config.json
+                      path: credential-config.json
+        - name: azure-wif
+          projected:
+            defaultMode: 0444
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  expirationSeconds: 3600
+                  audience: {{ .Values.workloadIdentity.azureTokenAudience | quote }}

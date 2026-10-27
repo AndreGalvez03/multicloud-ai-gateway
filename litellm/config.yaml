@@ -1,0 +1,69 @@
+# Model names match aigw.catalog. Locally every cloud model is an OpenAI-compatible
+# mock. To point a name at a real provider, replace litellm_params and grant the
+# runtime identity (IRSA, Workload Identity, or a managed identity). Do not put
+# static cloud keys in this file.
+#
+# Real Bedrock example (credentials come from the pod role, not from a key):
+#   - model_name: bedrock-claude
+#     litellm_params:
+#       model: bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0
+#       aws_region_name: us-east-1
+# Real Vertex example:
+#   - model_name: vertex-gemini
+#     litellm_params:
+#       model: vertex_ai/gemini-2.0-flash
+#       vertex_project: os.environ/VERTEX_PROJECT
+#       vertex_location: europe-west1
+# Real Azure AI Foundry example:
+#   - model_name: azure-gpt
+#     litellm_params:
+#       model: azure/gpt-4o-mini
+#       api_base: os.environ/AZURE_API_BASE
+#       api_version: "2024-10-21"
+#       # Entra ID on the pod identity. Do not set a static api_key.
+
+model_list:
+  - model_name: bedrock-claude
+    litellm_params:
+      model: openai/mock-bedrock-claude
+      api_base: http://mock-provider:8080/v1
+      api_key: os.environ/MOCK_PROVIDER_KEY
+  - model_name: vertex-gemini
+    litellm_params:
+      model: openai/mock-vertex-gemini
+      api_base: http://mock-provider:8080/v1
+      api_key: os.environ/MOCK_PROVIDER_KEY
+  - model_name: azure-gpt
+    litellm_params:
+      model: openai/mock-azure-gpt
+      api_base: http://mock-provider:8080/v1
+      api_key: os.environ/MOCK_PROVIDER_KEY
+  - model_name: embed-titan
+    litellm_params:
+      model: openai/mock-embed-titan
+      api_base: http://mock-provider:8080/v1
+      api_key: os.environ/MOCK_PROVIDER_KEY
+  - model_name: embed-azure
+    litellm_params:
+      model: openai/mock-embed-azure
+      api_base: http://mock-provider:8080/v1
+      api_key: os.environ/MOCK_PROVIDER_KEY
+  - model_name: local-llama
+    litellm_params:
+      model: ollama/llama3.2
+      api_base: http://ollama:11434
+
+router_settings:
+  num_retries: 0
+  timeout: 30
+  # The platform owns fallback so it can bill the model that actually answered
+  # and keep an EU team off a US model. Do not add a second fallback list here.
+  fallbacks: []
+
+litellm_settings:
+  drop_params: true
+  json_logs: true
+
+general_settings:
+  disable_spend_logs: true
+  allow_requests_on_db_unavailable: true
